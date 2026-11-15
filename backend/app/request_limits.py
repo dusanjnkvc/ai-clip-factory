@@ -89,4 +89,3 @@ class RequestBodyLimitMiddleware:
                 raise
             if not rejection_sent:
                 await reject(413, b'{"detail":"Request body exceeds the upload limit."}')
-

@@ -1,7 +1,7 @@
 """Initial persistent factory schema
 
 Revision ID: 8ec11f86cdf6
-Revises: 
+Revises:
 """
 from alembic import op
 import sqlalchemy as sa
