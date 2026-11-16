@@ -20,6 +20,11 @@ from .media import ConfigurationError, PipelineError
 T = TypeVar("T", bound=BaseModel)
 
 
+def free_mode_enabled() -> bool:
+    """Fail closed: paid cloud calls require an explicit free-mode opt-out."""
+    return os.getenv("FREE_MODE", "true").strip().lower() not in {"false", "0", "no"}
+
+
 class CloudProvider:
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY", "")
@@ -31,6 +36,8 @@ class CloudProvider:
         self.usage: list[dict] = []
 
     def require_configured(self):
+        if free_mode_enabled():
+            raise ConfigurationError("Free local mode is enabled. Cloud AI requests are disabled to prevent API charges. Use manual clip selection and optional SRT/VTT subtitles.")
         if not self.api_key:
             raise ConfigurationError("Cloud AI is not configured. Set OPENAI_API_KEY on the backend; no local model or simulated analysis is used.")
         parsed = urlparse(self.base_url)

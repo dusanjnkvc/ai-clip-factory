@@ -192,6 +192,25 @@ def timeline_words(plan: ClipPlan, transcript: Transcript) -> list[dict]:
     return words
 
 
+def timeline_cues(plan: ClipPlan, transcript: Transcript) -> list[dict]:
+    """Map supplied phrase cue intervals without estimating any word timings."""
+    cues = []
+    offset = 0.0
+    for scene in plan.scenes:
+        for cue in transcript.segments:
+            intersection_start = max(cue.start, scene.start)
+            intersection_end = min(cue.end, scene.end)
+            if intersection_end > intersection_start and cue.text.strip():
+                start = offset + intersection_start - scene.start
+                end = offset + intersection_end - scene.start
+                if cues and cues[-1]["text"] == cue.text and abs(cues[-1]["end"] - start) < .001:
+                    cues[-1]["end"] = end
+                else:
+                    cues.append({"text": cue.text, "start": start, "end": end})
+        offset += scene.end - scene.start
+    return cues
+
+
 def write_subtitles(plan: ClipPlan, transcript: Transcript, output: Path) -> dict:
     style = plan.subtitle_style
     # The lower safe area leaves platform UI and the central subject visible.
@@ -215,6 +234,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = []
     words = timeline_words(plan, transcript) if plan.subtitles_enabled else []
+    cues = timeline_cues(plan, transcript) if plan.subtitles_enabled and not words else []
     # Small phrase groups retain context; \kf provides synchronized word fill.
     group = []
     groups = []
@@ -233,11 +253,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             duration = max(.01, next_start - word["start"])
             parts.append("{\\kf" + str(round(duration * 100)) + "}" + _ass_escape(word["word"]))
         events.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,," + " ".join(parts))
+    for cue in cues:
+        # SRT/VTT offers phrase times, not aligned words. Keep each supplied
+        # phrase visible over its exact interval, including in karaoke style.
+        events.append(f"Dialogue: 0,{_ass_time(cue['start'])},{_ass_time(cue['end'])},Default,,0,0,0,,{_ass_escape(cue['text'])}")
     duration = sum(s.end - s.start for s in plan.scenes)
     if plan.show_hook and plan.hook:
         events.append(f"Dialogue: 1,0:00:00.00,{_ass_time(min(2.5, duration))},Hook,,0,0,0,,{_ass_escape(plan.hook)}")
     output.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
-    return {"words": len(words), "phrases": len(groups), "synchronized": bool(words), "path": str(output)}
+    return {"words": len(words), "phrases": len(groups) + len(cues), "synchronized": bool(words or cues),
+            "timing": "word" if words else "cue" if cues else "none", "path": str(output)}
 
 
 def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, output_path: str | Path, mode: str = "fast") -> dict:
@@ -287,5 +312,5 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
         run_media([ffmpeg_binary(), "-v", "error", *safe_input_options(temporary_video), "-i", str(temporary_video), "-f", "null", "-"], timeout=max(120, int(expected_duration * 5)))
         shutil.copyfile(work / "captions.ass", captions_output)
         os.replace(temporary_video, output)
-    rendered.update({"path": str(output), "subtitles_path": str(captions_output), "subtitle_words": subtitle_info["words"], "subtitle_synchronized": subtitle_info["synchronized"], "source_had_audio": info["has_audio"], "sha256": sha256_file(output), "decode_verified": True})
+    rendered.update({"path": str(output), "subtitles_path": str(captions_output), "subtitle_words": subtitle_info["words"], "subtitle_synchronized": subtitle_info["synchronized"], "subtitle_timing": subtitle_info["timing"], "subtitle_phrases": subtitle_info["phrases"], "source_had_audio": info["has_audio"], "sha256": sha256_file(output), "decode_verified": True})
     return rendered

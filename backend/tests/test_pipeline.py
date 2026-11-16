@@ -21,6 +21,11 @@ from app.services.provider import CloudProvider
 from app.services.schemas import CampaignRules, ClipPlan, Metadata, Scores, Transcript
 
 
+@pytest.fixture(autouse=True)
+def hosted_contract_tests_are_explicitly_opted_in(monkeypatch):
+    monkeypatch.setenv('FREE_MODE','false')
+
+
 def sample_plan():
     return {
         "title": "A precise demonstration", "start": .2, "end": 2.0,

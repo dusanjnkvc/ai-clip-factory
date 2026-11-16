@@ -65,6 +65,12 @@ class Segment(Model):
     end: float = Field(ge=0)
     text: str = ""
 
+    @model_validator(mode="after")
+    def ordered(self):
+        if self.end <= self.start:
+            raise ValueError("Subtitle cue end must follow its start")
+        return self
+
 
 class Transcript(Model):
     text: str = ""
@@ -72,6 +78,7 @@ class Transcript(Model):
     words: list[Word] = Field(default_factory=list)
     segments: list[Segment] = Field(default_factory=list)
     provider: str = "cloud"
+    timing_source: Literal["provider_words", "uploaded_cues", "none"] | None = None
 
 
 class Scene(Model):
@@ -118,6 +125,12 @@ class EditDNA(Model):
     ending_structure: str
 
 
+class ManualMetadata(Model):
+    title: str = Field(default="", max_length=100)
+    description: str = Field(default="", max_length=5000)
+    hashtags: list[str] = Field(default_factory=list, max_length=30)
+
+
 class ClipPlan(Model):
     title: str = Field(min_length=1, max_length=160)
     start: float = Field(ge=0)
@@ -133,6 +146,9 @@ class ClipPlan(Model):
     scores: Scores
     transcript_excerpt: str = ""
     semantic_notes: list[str] = Field(default_factory=list)
+    generation_method: Literal["hosted_ai", "manual_local"] = "hosted_ai"
+    score_origin: Literal["heuristic", "not_scored"] = "heuristic"
+    manual_metadata: ManualMetadata | None = None
 
     @model_validator(mode="after")
     def timeline(self):

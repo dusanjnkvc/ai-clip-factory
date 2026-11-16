@@ -29,6 +29,7 @@ from .publishing import configured as youtube_configured, authorization_url, fin
 from .request_limits import RequestBodyLimitMiddleware
 from .usage import record_usage
 from .services.media import ConfigurationError, PipelineError
+from .runtime import free_mode, local_no_auth, create_pipeline_service
 
 
 @asynccontextmanager
@@ -72,8 +73,7 @@ def owned(db, cls, record_id, user):
     return row
 
 def pipeline():
-    from .services.pipeline import PipelineService
-    return PipelineService()
+    return create_pipeline_service()
 
 def rights_for(db,source_id,user_id):
     record=db.scalar(select(MediaRightsRecord).where(MediaRightsRecord.source_id==source_id,MediaRightsRecord.user_id==user_id,MediaRightsRecord.confirmed.is_(True)))
@@ -96,7 +96,7 @@ def reserve_ai_budget(db,user,amount,job_id=None):
     db.flush()
 
 def reserve_analysis(db,user_id):
-    if os.getenv('OPENAI_API_KEY'):
+    if not free_mode() and os.getenv('OPENAI_API_KEY'):
         user=db.get(User,user_id)
         rate_limit('paid-analysis:'+user_id,limit=30,seconds=3600)
         reserve_ai_budget(db,user,min(float(os.getenv('MAX_ANALYSIS_COST_USD','0.25')),settings.max_job_cost))
@@ -108,12 +108,13 @@ def configuration():
         ffmpeg_available = Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file()
     except Exception:
         ffmpeg_available = bool(shutil.which(os.getenv('FFMPEG_BINARY','ffmpeg')))
-    return {'ai':bool(os.getenv('OPENAI_API_KEY')), 'ffmpeg':ffmpeg_available,
-        'storage':'s3' if os.getenv('S3_BUCKET') else 'local', 'youtube':youtube_configured(),
+    return {'free_mode':free_mode(), 'local_no_auth':local_no_auth(), 'browser_mode':False, 'processing_provider':'local_manual' if free_mode() else 'hosted_ai',
+        'external_calls_enabled':not free_mode(), 'ai':not free_mode() and bool(os.getenv('OPENAI_API_KEY')), 'ffmpeg':ffmpeg_available,
+        'storage':'s3' if not free_mode() and os.getenv('S3_BUCKET') else 'local', 'youtube':youtube_configured(),
         'ai_model':os.getenv('AI_MODEL','gpt-4o-mini'), 'transcription_model':os.getenv('TRANSCRIPTION_MODEL','whisper-1'),
         'max_upload_mb':settings.max_upload_mb,'monthly_spend_limit_usd':settings.monthly_limit,
         'max_job_cost_usd':settings.max_job_cost,'retention_days':settings.retention_days,
-        'publishing':{'youtube':'official_oauth' if youtube_configured() else 'configuration_required','tiktok':'manual_package','instagram':'manual_package','content_rewards':'manual_submission'},
+        'publishing':{'youtube':'manual_package' if free_mode() else 'official_oauth' if youtube_configured() else 'configuration_required','tiktok':'manual_package','instagram':'manual_package','content_rewards':'manual_submission'},
         'budget_note':'Job reservations are conservative spending controls. Reconcile provider invoices; external provider billing is not a hard real-time cap.'}
 
 class Registration(BaseModel):
@@ -127,7 +128,7 @@ class Login(BaseModel):
 
 @app.get('/api/health')
 def health():
-    return {'status':'ok','version':'0.1.0'}
+    return {'status':'ok','version':'0.2.0','free_mode':free_mode(),'local_no_auth':local_no_auth(),'browser_mode':False}
 
 @app.post('/api/auth/register')
 def register(body: Registration, response: Response, request: Request, db: DBSession=Depends(get_db)):
@@ -158,7 +159,7 @@ def login(body: Login, response: Response, request: Request, db: DBSession=Depen
 
 @app.get('/api/auth/me')
 def me(user: User=Depends(current_user)):
-    return obj(user,'password_hash','preferences')
+    return {**obj(user,'password_hash','preferences'),'local_workspace':local_no_auth()}
 
 @app.post('/api/auth/logout')
 def logout(response: Response,request: Request,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
@@ -322,28 +323,84 @@ def upload_source(file: UploadFile=File(...),rights_confirmed: bool=Form(...),ri
 def sources(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     return [obj(s,'storage_key') for s in db.scalars(select(SourceVideo).where(SourceVideo.user_id==user.id).order_by(SourceVideo.created_at.desc()))]
 
+@app.post('/api/sources/{source_id}/subtitles')
+def upload_subtitles(source_id: str,file: UploadFile=File(...),user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    source=owned(db,SourceVideo,source_id,user)
+    rate_limit('subtitles:'+user.id,limit=20,seconds=3600)
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.source_id==source.id,ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'Wait for this source’s active render to finish before replacing its subtitles.')
+    suffix=Path(file.filename or '').suffix.lower()
+    if suffix not in {'.srt','.vtt'}:
+        raise HTTPException(422,'Upload an SRT or WebVTT subtitle file.')
+    raw=file.file.read(2*1024*1024+1)
+    if len(raw)>2*1024*1024:
+        raise HTTPException(413,'Subtitle files are limited to 2 MB.')
+    try:
+        from .services.local import parse_subtitles
+        transcript=parse_subtitles(raw.decode('utf-8-sig'),suffix.lstrip('.'),source.media_info['duration'])
+    except (UnicodeDecodeError,ValueError,PipelineError) as exc:
+        raise HTTPException(422,'Invalid subtitle file: '+str(exc)[:600])
+    row=db.scalar(select(Transcript).where(Transcript.source_id==source.id))
+    if row:
+        row.content=transcript
+        row.provider='manual_subtitle_upload'
+    else:
+        db.add(Transcript(source_id=source.id,content=transcript,provider='manual_subtitle_upload'))
+    audit(db,user.id,'source.subtitles_imported',source.id,filename=Path(file.filename or '').name,cues=len(transcript.get('segments',[])),timing='supplied_cue_timestamps')
+    db.commit()
+    return {'source_id':source.id,'provider':'manual_subtitle_upload','cues':len(transcript.get('segments',[])),'timing':'cue','word_timing_available':False}
+
+class ManualSelection(BaseModel):
+    model_config={'allow_inf_nan':False}
+    start: float = Field(default=0,ge=0)
+    end: float | None = Field(default=None,gt=0)
+    title: str = Field(default='',max_length=100)
+    description: str = Field(default='',max_length=2000)
+    hashtags: list[str] = Field(default_factory=list,max_length=30)
+    crop_x: float = Field(default=.5,ge=0,le=1)
+    crop_y: float = Field(default=.5,ge=0,le=1)
+    zoom: float = Field(default=1,ge=1,le=1.5)
+    subtitle_style: Literal['clean','bold','podcast','gaming','karaoke'] = 'clean'
+    hook: str = Field(default='',max_length=140)
+    show_hook: bool = False
+
 class JobCreate(BaseModel):
     campaign_id: str
     source_id: str
     mode: Literal['fast','quality'] = 'fast'
     clip_count: int = Field(default=1,ge=1,le=5)
+    manual_selection: ManualSelection | None = None
 
 @app.post('/api/jobs')
 def create_job(body: JobCreate,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     campaign = owned(db,Campaign,body.campaign_id,user)
     source = owned(db,SourceVideo,body.source_id,user)
+    if free_mode() and not campaign.rules and campaign.brief.strip():
+        analyze_campaign_record(db,campaign)
     if not campaign.rules:
-        raise HTTPException(422,'Analyze the campaign or enter reviewed rules before generating clips.')
+        raise HTTPException(422,'Extract the supplied campaign rules or save reviewed rules before rendering clips.')
     active = db.scalar(select(ProcessingJob.id).where(ProcessingJob.user_id==user.id,ProcessingJob.source_id==source.id,ProcessingJob.campaign_id==campaign.id,ProcessingJob.status.in_(['queued','processing'])))
     if active:
         raise HTTPException(409,'This source already has an active job for this campaign.')
     # Reserve the full per-job allowance conservatively, including failed jobs
     # that may have incurred provider usage. Reconcile actual provider invoices.
-    per_job = min(float(user.preferences.get('max_job_cost_usd',settings.max_job_cost)),settings.max_job_cost)
-    job = ProcessingJob(user_id=user.id,campaign_id=campaign.id,source_id=source.id,mode=body.mode,clip_count=body.clip_count,rules_snapshot=campaign.rules,cost_reservation=per_job)
+    payload={}
+    if free_mode():
+        if body.clip_count!=1 or body.manual_selection is None:
+            raise HTTPException(422,'Free local rendering needs one manual clip selection. Set start/end times in Create Clips.')
+        from .services.local import build_manual_plan
+        transcript=db.scalar(select(Transcript).where(Transcript.source_id==source.id))
+        try:
+            build_manual_plan(body.manual_selection.model_dump(),{**source.media_info,'filename':source.filename},transcript.content if transcript else {},campaign.rules)
+        except (ValueError,PipelineError) as exc:
+            raise HTTPException(422,str(exc)[:800])
+        payload={'processing_provider':'local_manual','manual_selection':body.manual_selection.model_dump()}
+    per_job = 0 if free_mode() else min(float(user.preferences.get('max_job_cost_usd',settings.max_job_cost)),settings.max_job_cost)
+    job = ProcessingJob(user_id=user.id,campaign_id=campaign.id,source_id=source.id,mode=body.mode,clip_count=body.clip_count,rules_snapshot=campaign.rules,cost_reservation=per_job,payload=payload)
     db.add(job)
     db.flush()
-    reserve_ai_budget(db,user,per_job,job.id)
+    if not free_mode():
+        reserve_ai_budget(db,user,per_job,job.id)
     audit(db,user.id,'job.queued',job.id,mode=job.mode,clips=job.clip_count,cost_reservation=per_job)
     db.commit()
     return obj(job)
@@ -357,7 +414,10 @@ def retry_job(job_id: str,user: User=Depends(current_user),db: DBSession=Depends
     job = owned(db,ProcessingJob,job_id,user)
     if job.status not in {'failed','blocked'} or job.attempts>=3:
         raise HTTPException(409,'Only failed or blocked jobs with fewer than 3 attempts can resume.')
-    reserve_ai_budget(db,user,job.cost_reservation,job.id)
+    if free_mode() and not (job.payload.get('manual_selection') or job.payload.get('plan')):
+        raise HTTPException(422,'This old AI job has no manual selection. Create a new free local render with start/end times.')
+    if not free_mode():
+        reserve_ai_budget(db,user,job.cost_reservation,job.id)
     job.status='queued'
     job.stage='Resuming persisted work'
     job.error=None
@@ -477,6 +537,8 @@ def review_clip(clip_id: str,body: ReviewUpdate,user: User=Depends(current_user)
 
 @app.post('/api/clips/{clip_id}/regenerate-metadata')
 def regenerate_metadata(clip_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    if free_mode():
+        raise HTTPException(503,'AI metadata regeneration is disabled in free mode. Edit and save the title, caption and hashtags manually.')
     rate_limit('metadata:'+user.id,limit=10,seconds=3600)
     clip=owned(db,RenderedClip,clip_id,user)
     plan=db.get(EditingPlan,clip.editing_plan_id)
@@ -523,13 +585,22 @@ def regenerate_clip(clip_id: str,body: RegenerateRequest,user: User=Depends(curr
         source=db.get(SourceVideo,clip.source_id)
         if override['end']>source.media_info['duration']:
             raise HTTPException(422,'The timeline extends beyond the source video.')
+    if free_mode() and body.optimize_metadata:
+        raise HTTPException(422,'Use the manual metadata editor in free mode. AI optimization is disabled.')
     # The same budget and duplicate-job guard used for initial generation applies.
-    result=create_job(JobCreate(campaign_id=clip.campaign_id,source_id=clip.source_id,mode=body.mode,clip_count=1),user,db)
+    selected_plan=override or original.plan
+    selection=None
+    if free_mode():
+        scene=selected_plan.get('scenes',[{}])[0]
+        selection=ManualSelection(start=selected_plan['start'],end=selected_plan['end'],title=selected_plan['title'],crop_x=scene.get('crop_x',.5),crop_y=scene.get('crop_y',.5),zoom=scene.get('zoom',1),subtitle_style=selected_plan.get('subtitle_style','clean'))
+    result=create_job(JobCreate(campaign_id=clip.campaign_id,source_id=clip.source_id,mode=body.mode,clip_count=1,manual_selection=selection),user,db)
     job=db.get(ProcessingJob,result['id'])
     job.rules_snapshot=original.rules_snapshot
     job.payload={'clip_id':clip.id,'base_version':clip.current_version}
     if override:
         job.payload={**job.payload,'plan':override}
+    elif free_mode():
+        job.payload={**job.payload,'plan':original.plan}
     if not body.optimize_metadata:
         job.payload={**job.payload,'metadata':clip.metadata_json}
     db.commit()
@@ -568,6 +639,8 @@ class PublishRequest(BaseModel):
 
 @app.post('/api/clips/{clip_id}/publish')
 def authorize_publish(clip_id: str,body: PublishRequest,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    if free_mode():
+        raise HTTPException(503,'Free local mode creates manual upload packages. Direct platform publishing is disabled.')
     clip=owned(db,RenderedClip,clip_id,user)
     account=owned(db,ConnectedAccount,body.account_id,user)
     if not body.explicit_authorization:

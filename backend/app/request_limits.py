@@ -30,6 +30,8 @@ class RequestBodyLimitMiddleware:
             return min(self.max_body_bytes, 21 * 1024 * 1024)
         if path == "/api/analytics/import-csv":
             return min(self.max_body_bytes, 2 * 1024 * 1024)
+        if path.startswith('/api/sources/') and path.endswith('/subtitles'):
+            return min(self.max_body_bytes, 3 * 1024 * 1024)
         return min(self.max_body_bytes, 1024 * 1024)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

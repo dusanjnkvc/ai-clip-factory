@@ -16,11 +16,12 @@ from .models import (OAuthState, ConnectedAccount, PublishingJob, RenderedClip, 
 from .security import token_hash
 from .storage import materialize
 from .submissions import create_submission, submission_minutes
+from .runtime import free_mode
 
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly']
 
 def configured():
-    return all(os.getenv(key) for key in ('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'))
+    return not free_mode() and all(os.getenv(key) for key in ('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'))
 
 def cipher():
     key = os.getenv('TOKEN_ENCRYPTION_KEY')
@@ -32,6 +33,8 @@ def cipher():
         raise HTTPException(503, 'TOKEN_ENCRYPTION_KEY must be a valid Fernet key.')
 
 def authorization_url(db, user_id):
+    if free_mode():
+        raise HTTPException(503,'Free local mode uses manual upload packages. No external publishing connection is required.')
     if not configured():
         raise HTTPException(503, 'Configure the YouTube OAuth client, redirect URI and token encryption key first.')
     cipher()
@@ -43,6 +46,8 @@ def authorization_url(db, user_id):
     return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'redirect_uri':os.environ['YOUTUBE_REDIRECT_URI'], 'response_type':'code', 'scope':' '.join(SCOPES), 'state':state, 'access_type':'offline', 'prompt':'consent', 'code_challenge':challenge, 'code_challenge_method':'S256'})
 
 def finish_oauth(db, user, state, code):
+    if free_mode():
+        raise HTTPException(503,'External account connections are disabled in free local mode.')
     row = db.scalar(select(OAuthState).where(OAuthState.user_id == user.id, OAuthState.state_hash == token_hash(state), OAuthState.expires_at > now()))
     if not row:
         raise HTTPException(400, 'OAuth request expired or invalid. Connect again.')
@@ -75,6 +80,8 @@ def finish_oauth(db, user, state, code):
     return account
 
 def access_token(db, account):
+    if free_mode():
+        raise ValueError('External publishing is disabled in free local mode. Use the manual upload package.')
     credentials = json.loads(cipher().decrypt(account.encrypted_credentials.encode()))
     refresh = credentials.get('refresh_token')
     if not refresh:
@@ -104,6 +111,8 @@ def selected_metadata(metadata, platform):
     return data
 
 def publish_youtube(db, job):
+    if free_mode():
+        raise ValueError('External publishing is disabled in free local mode. Use the manual upload package.')
     clip = db.get(RenderedClip, job.clip_id)
     campaign = db.get(Campaign, clip.campaign_id)
     account = db.get(ConnectedAccount, job.account_id)

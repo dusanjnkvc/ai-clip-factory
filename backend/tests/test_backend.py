@@ -17,6 +17,8 @@ from app.submissions import countdown, estimate_earnings
 
 @pytest.fixture
 def environment(tmp_path,monkeypatch):
+    monkeypatch.setenv('FREE_MODE','false')
+    monkeypatch.setenv('LOCAL_NO_AUTH','false')
     monkeypatch.delenv('OPENAI_API_KEY',raising=False)
     monkeypatch.delenv('S3_BUCKET',raising=False)
     engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
@@ -275,3 +277,118 @@ def test_reported_usage_is_persisted_without_inventing_a_price(environment):
         assert row.detail['usage']['total_tokens']==42
         assert 'amount' not in row.detail
         assert service.usage==[]
+
+
+def test_free_workflow_renders_real_clip_and_cue_subtitles_without_spending(environment,monkeypatch):
+    from app.services.provider import CloudProvider
+    client,factory,config=environment
+    monkeypatch.setenv('FREE_MODE','true')
+    monkeypatch.setenv('OPENAI_API_KEY','must-never-be-used')
+    def forbidden_cloud_call(*args,**kwargs):
+        raise AssertionError('Free local mode must never call the cloud provider.')
+    monkeypatch.setattr(CloudProvider,'_request',forbidden_cloud_call)
+    user=register(client)
+    _,source_id=seed_job_data(factory,user['id'],config)
+    campaign=client.post('/api/campaigns',json={'name':'Free local test','brief':'Platforms: YouTube\nDuration: 1-2 seconds\nDraft approval: No\nRequired hashtags: #Local'}).json()
+    assert campaign['rules']
+    assert campaign['analysis_error'] is None
+    assert campaign['review_required'] is True
+    assert client.patch('/api/settings',json={'monthly_spend_limit_usd':0,'max_job_cost_usd':1}).status_code==200
+    captions=b'1\n00:00:00,200 --> 00:00:01,600\nUser supplied local caption\n'
+    imported=client.post(f'/api/sources/{source_id}/subtitles',files={'file':('captions.srt',captions,'application/x-subrip')})
+    assert imported.status_code==200,imported.text
+    assert imported.json()['word_timing_available'] is False
+    response=client.post('/api/jobs',json={'campaign_id':campaign['id'],'source_id':source_id,'clip_count':1,'manual_selection':{'start':0,'end':1.8,'title':'Local test pattern','description':'A user-selected portion of generated test signals.','hashtags':['#Local']}})
+    assert response.status_code==200,response.text
+    job_id=response.json()['id']
+    assert response.json()['cost_reservation']==0
+    assert worker.run_once() is True
+    job=next(j for j in client.get('/api/jobs').json() if j['id']==job_id)
+    assert job['status']=='completed',job
+    clips=client.get('/api/clips').json()
+    assert len(clips)==1
+    clip=clips[0]
+    assert clip['media_info']['decode_verified'] is True
+    assert clip['media_info']['width']==1080 and clip['media_info']['height']==1920
+    video=client.get(clip['download_url'])
+    assert video.status_code==200 and video.content[4:8]==b'ftyp'
+    import io,zipfile
+    package=client.get(f"/api/clips/{clip['id']}/package")
+    assert package.status_code==200
+    with zipfile.ZipFile(io.BytesIO(package.content)) as archive:
+        assert 'clip.mp4' in archive.namelist() and 'metadata.json' in archive.namelist()
+    with factory() as db:
+        assert db.scalar(select(ProcessingCost.id)) is None
+        transcript=db.scalar(select(Transcript).where(Transcript.source_id==source_id))
+        assert transcript.content['words']==[]
+        assert transcript.content['provider']=='manual_subtitle_upload'
+    assert client.get('/api/settings').json()['free_mode'] is True
+
+
+def test_free_mode_ignores_cloud_storage_and_blocks_external_features(environment,monkeypatch,tmp_path):
+    client,factory,config=environment
+    monkeypatch.setenv('FREE_MODE','true')
+    monkeypatch.setenv('OPENAI_API_KEY','must-never-be-used')
+    monkeypatch.setenv('S3_BUCKET','must-never-be-contacted')
+    register(client)
+    source=tmp_path/'local.txt'
+    source.write_text('local only',encoding='utf-8')
+    storage.put_file(source,'local/free-test.txt')
+    assert storage.local_path('local/free-test.txt').read_text()=='local only'
+    assert storage.signed_url('local/free-test.txt') is None
+    with storage.materialize('local/free-test.txt') as path:
+        assert path.is_file()
+    assert client.get('/api/settings').json()['storage']=='local'
+    connect=client.post('/api/accounts/youtube/connect')
+    assert connect.status_code==503 and 'manual' in connect.json()['detail'].lower()
+    regenerated=client.post('/api/clips/not-a-real-clip/regenerate-metadata')
+    assert regenerated.status_code==503 and 'free mode' in regenerated.json()['detail']
+
+
+def test_free_selection_validation_and_subtitle_ownership(environment,monkeypatch):
+    client,factory,config=environment
+    monkeypatch.setenv('FREE_MODE','true')
+    user=register(client)
+    campaign_id,source_id=seed_job_data(factory,user['id'],config)
+    body={'campaign_id':campaign_id,'source_id':source_id}
+    assert client.post('/api/jobs',json=body).status_code==422
+    assert client.post('/api/jobs',json={**body,'manual_selection':{'start':1.5,'end':1}}).status_code==422
+    assert client.post('/api/jobs',json={**body,'manual_selection':{'start':0,'end':1000}}).status_code==422
+    bad=client.post(f'/api/sources/{source_id}/subtitles',files={'file':('bad.srt',b'no timing here','text/plain')})
+    assert bad.status_code==422
+    client.post('/api/auth/logout')
+    register(client,'another@example.com')
+    denied=client.post(f'/api/sources/{source_id}/subtitles',files={'file':('captions.srt',b'no timing here','text/plain')})
+    assert denied.status_code==404
+
+
+def test_local_workspace_opens_without_login_and_preserves_records(environment,monkeypatch):
+    client,factory,_=environment
+    monkeypatch.setenv('FREE_MODE','true')
+    monkeypatch.setenv('LOCAL_NO_AUTH','true')
+    monkeypatch.setenv('APP_ENV','development')
+    me=client.get('/api/auth/me')
+    assert me.status_code==200 and me.json()['local_workspace'] is True
+    local_id=me.json()['id']
+    assert client.cookies.get('acf_session') is None
+    campaign=client.post('/api/campaigns',json={'name':'No login campaign','brief':'Platforms: YouTube\nDraft approval: No'})
+    assert campaign.status_code==200,campaign.text
+    client.cookies.clear()
+    assert client.get('/api/auth/me').json()['id']==local_id
+    assert len(client.get('/api/campaigns').json())==1
+    health=client.get('/api/health').json()
+    assert health['free_mode'] is True and health['local_no_auth'] is True
+
+
+def test_local_no_login_is_disabled_for_production_and_remote_urls(environment,monkeypatch):
+    from app.runtime import local_no_auth
+    client,_,_=environment
+    monkeypatch.setenv('FREE_MODE','true')
+    monkeypatch.setenv('LOCAL_NO_AUTH','true')
+    monkeypatch.setenv('APP_ENV','production')
+    assert local_no_auth() is False
+    assert client.get('/api/auth/me').status_code==401
+    monkeypatch.setenv('APP_ENV','development')
+    monkeypatch.setenv('FRONTEND_URL','https://public.example.com')
+    assert local_no_auth() is False
+    assert client.get('/api/auth/me').status_code==401

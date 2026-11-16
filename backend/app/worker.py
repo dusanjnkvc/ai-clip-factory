@@ -19,6 +19,7 @@ from .models import (ProcessingJob, Transcript, SourceVideo, MediaRightsRecord, 
     EditingPlan, RenderedClip, ClipVersion, ComplianceCheck, AuditLog, now)
 from .storage import materialize, put_file
 from .usage import record_usage
+from .runtime import free_mode, create_pipeline_service
 
 log = logging.getLogger('factory.worker')
 stopping = False
@@ -47,8 +48,7 @@ def progress(job_id, stage, percent):
         db.commit()
 
 def process_job(job_id):
-    from .services.pipeline import PipelineService
-    service = PipelineService()
+    service = create_pipeline_service()
     started = time.monotonic()
     with SessionLocal() as db:
         job = db.get(ProcessingJob, job_id)
@@ -64,15 +64,24 @@ def process_job(job_id):
         with materialize(source.storage_key) as source_path, tempfile.TemporaryDirectory(prefix='acf-render-') as temp:
             work = Path(temp)
             if transcript is None:
-                progress(job_id, 'Transcribing source with hosted AI', 8)
+                progress(job_id, 'Reading optional local subtitles' if free_mode() else 'Transcribing source with hosted AI', 8)
                 transcript = service.transcribe(source_path, cache_path=work / 'transcript.json')
                 record_usage(db, service, job.user_id, job.id)
                 db.add(Transcript(source_id=source.id, content=transcript, provider=os.getenv('TRANSCRIPTION_MODEL', 'whisper-1')))
                 db.commit()
             existing = list(db.scalars(select(EditingPlan).join(ClipCandidate).where(ClipCandidate.job_id == job_id).order_by(ClipCandidate.created_at)))
             if not existing:
-                progress(job_id, 'Selecting distinct moments and planning edits', 20)
-                plans = [job.payload['plan']] if job.payload.get('plan') else service.plan_clips(transcript, rules, {**source.media_info,'path':str(source_path)}, count=job.clip_count, mode=job.mode, previous=previous)
+                progress(job_id, 'Validating your manual clip selection' if free_mode() else 'Selecting distinct moments and planning edits', 20)
+                if job.payload.get('plan'):
+                    plans=[job.payload['plan']]
+                elif free_mode():
+                    if not job.payload.get('manual_selection'):
+                        from .services.media import ConfigurationError
+                        raise ConfigurationError('Free local rendering needs a manual selection. Create a new clip with start/end times; no AI request was made.')
+                    from .services.local import build_manual_plan
+                    plans=[build_manual_plan(job.payload['manual_selection'],{**source.media_info,'filename':source.filename},transcript,rules)]
+                else:
+                    plans=service.plan_clips(transcript,rules,{**source.media_info,'path':str(source_path)},count=job.clip_count,mode=job.mode,previous=previous)
                 record_usage(db, service, job.user_id, job.id)
                 for plan in plans:
                     fingerprint = hashlib.sha256(json.dumps({'source': source.sha256, 'scenes': plan.get('scenes'), 'start': plan.get('start'), 'end': plan.get('end')}, sort_keys=True).encode()).hexdigest()

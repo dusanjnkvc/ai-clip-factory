@@ -1,59 +1,45 @@
-# Cloud deployment
+# Free browser hosting and optional local operation
 
-The web server, API, and FFmpeg worker need separate processes. A request-based serverless host alone cannot run this pipeline reliably. The included containers can run on a small Linux VM or a container platform with persistent storage and long-running CPU workers.
+## GitHub Pages edition
 
-## Single-VM deployment
+The selected hosted edition is a static site. Next.js exports application files; FFmpeg WebAssembly renders on the visitor’s device; IndexedDB stores the visitor’s local records/media. GitHub Pages does not run Python, PostgreSQL, FFmpeg CPU workers, OAuth secrets, or a media-upload server.
 
-Use a Linux VM with Docker Compose v2. Start with 2–4 CPU cores and 4–8 GB RAM and adjust after benchmarking representative media. These are starting configurations, not measured capacity or cost guarantees. Allow free space for source media, audio extracts, render outputs, and database backups. No GPU is required.
+Use the dedicated **public** `ai-clip-factory` repository for the selected free Pages path. Application code becomes public. `.env`, tokens, source videos, rendered user media, databases, and runtime files remain excluded by `.gitignore`; browser IndexedDB is not committed to Git. Existing LogEN source/repositories are outside this project.
 
-1. Clone the dedicated `ai-clip-factory` repository. Copy `.env.example` to `.env` on the server; never add the filled-in file to Git.
-2. Generate strong, different `APP_SECRET` and URL-safe `POSTGRES_PASSWORD` values. Set `APP_ENV=production`.
-3. Point your domain's DNS at the server. Set `DOMAIN=clips.example.com`, `PUBLIC_URL=https://clips.example.com`, `FRONTEND_URL=https://clips.example.com`, and `API_BASE_URL=https://clips.example.com` in `.env`.
-4. Add the hosted AI key and configure model/budget limits. Keep provider billing limits enabled as a second control.
-5. Open inbound TCP 80/443 and UDP 443 for HTTPS; restrict SSH to your administration network. PostgreSQL and the API remain on the internal Compose network. The base frontend port is bound to loopback.
-6. Start the HTTPS overlay:
+The deployment workflow uses:
 
-```sh
-docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
-docker compose logs -f migrate api worker caddy
-```
+- `NEXT_PUBLIC_BROWSER_MODE=true`
+- `NEXT_PUBLIC_BASE_PATH=/ai-clip-factory`
+- Next.js static output in `frontend/out`
+- Bundled FFmpeg JavaScript/WebAssembly assets copied into the static output
+- GitHub Actions Pages artifact upload/deployment
 
-Caddy obtains HTTPS certificates for the configured domain. Production sessions require HTTPS. A healthy API and a running worker are both required; the health endpoint does not prove hosted AI authorization or verify a rendering benchmark.
+In repository **Settings → Pages**, choose **GitHub Actions** as the deployment source. Push the reviewed source and wait for the Pages deployment to finish. Use its returned/verified URL. A workflow file, static build, or repository push alone is not proof of successful hosting. A failed or pending deployment must be reported honestly.
 
-## Configuration and secrets
+There is no account/login, API signup, or application subscription in this edition. It does not configure a billable backend or paid AI. GitHub’s hosting quotas and availability still apply. The visitor uses their own device resources and internet connection; unlimited runtime, storage, availability, or perpetual service cannot be promised.
 
-Use your cloud's secret manager or a protected server `.env` with access limited to the deployment user. Configure `OPENAI_BASE_URL`, `AI_MODEL`, and `TRANSCRIPTION_MODEL` for a compatible hosted provider. Do not route AI requests through the browser or embed credentials in Next.js public environment variables.
+## Browser data and runtime limits
 
-`whisper-1` supplies word timestamps for the implemented subtitle workflow. The provider documents its deprecation for February 26, 2027. Revalidate timestamp support and run transcript synchronization tests before changing to a replacement. See [the official speech-to-text guide](https://developers.openai.com/api/docs/guides/speech-to-text).
+IndexedDB is scoped to a browser profile/device and site origin. Clearing site data, browser eviction, private browsing expiry, changing profiles/devices, or changing the site origin can remove or hide local data. There is no cloud sync or account recovery. Preserve source originals and download important results outside the browser.
 
-For YouTube, create a Google Cloud OAuth web client, enable the YouTube Data API, configure its consent screen/scopes, and set the exact HTTPS callback `https://clips.example.com/api/accounts/youtube/callback`. Supply `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, and `YOUTUBE_REDIRECT_URI`. Generate `TOKEN_ENCRYPTION_KEY` with:
+The app and FFmpeg assets are served as static files. Selecting a source video stores it locally rather than sending it to GitHub for processing. GitHub receives normal site/asset requests; it is not a private video storage service.
 
-```sh
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
+Keep the tab open during rendering. Closing/reloading can interrupt a job; a browser queue does not provide the durable lease/recovery behavior of the optional native worker. Browser memory and CPU limits can reject large media. Start with short authorized sources and measure the actual target devices. Captions require supplied source-timed SRT/VTT; no speech recognition or local AI model is installed.
 
-Store that key securely and retain it across upgrades; losing it prevents decryption of saved platform tokens. Google may restrict uploads from unverified projects. [YouTube's upload documentation](https://developers.google.com/youtube/v3/docs/videos/insert) describes project verification and upload permissions. Connecting an account does not authorize unattended publication of every future clip.
+## Optional native local edition
 
-TikTok and Instagram require eligible accounts and approved official API access. Until an integration is configured and implemented, use the application's download/manual publication workflow. Content Rewards submissions remain manual unless a real authorized integration is available.
+For stronger native FFmpeg performance, run the Windows launcher from README with `FREE_MODE=true`. It uses a local FastAPI service, SQLite/local disk, and a separate persistent worker. The free development workspace does not need a login. Keep services bound to loopback; this local convenience is not appropriate as an unauthenticated public backend.
 
-## Persistent data and operations
+Docker/Compose is optional and runs the API, PostgreSQL, worker, and Next.js on the existing computer. It has no cloud hosting requirement. Use random application/database secrets and retain database/media volumes. Check Docker licensing for your own use. Electricity, hardware, disk, and internet are still resources.
 
-The default deployment stores PostgreSQL in `postgres_data` and authorized source/generated files in `media_data`. Back up both. Encrypt cloud disks and backups. Set retention according to the campaign's requirements and your users' expectations. Check the implementation status before relying on automatic retention cleanup.
+The supplied cloud/HTTPS container overlay is retained as an optional architecture artifact. Publishing a native backend publicly requires deliberate authentication/security configuration and a cost review. It is outside the selected free Pages deployment and has not been verified as a provisioned cloud service.
 
-To back up PostgreSQL without placing its password in command history:
+## Optional external adapters
 
-```sh
-docker compose exec -T db pg_dump -U clipfactory -d clipfactory -Fc > clipfactory.dump
-```
+Native hosted AI, official YouTube publishing, and S3 adapters are disabled by `FREE_MODE=true`. A saved key cannot override that guard. Enabling them requires explicit `FREE_MODE=false`, credentials, positive spending limits, account eligibility, and authorization. It can incur charges; do not enable it for the no-paid-services workflow.
 
-Place the resulting backup outside the source repository. Back up the media volume separately using your cloud volume snapshot service. Periodically restore into an isolated environment and verify a source and clip can be retrieved by their owner.
+Free mode uses manual platform upload packages and manual Content Rewards submission. A rendered file is not a published post, and publication is not confirmed submission. Record actual public URLs and timestamps and verify campaign-specific deadlines yourself.
 
-S3-compatible configuration is available for object transfer where supported. The worker still needs temporary disk. Multiple workers need access to the same source objects; the single-VM shared volume is the simplest supported topology. Do not scale to separate hosts until shared object storage, leases, and atomic claim behavior have been checked on that topology.
+## Verification
 
-On upgrade, back up first, pull a reviewed commit, and rerun Compose with `--build`. The migration service applies database changes before workers/API restart. Monitor job errors, overdue leases, worker restarts, storage use, provider costs, and submission deadlines. Configure cloud alerts outside the application for machine availability and billing.
-
-## Verification before real campaigns
-
-Complete one credentialed round trip with authorized sample media: campaign import, provider analysis, transcript, real rendered MP4, metadata, compliance review, owner-only download, and a permitted private YouTube upload if configured. Confirm the returned post URL and actual timestamp, then confirm the manual submission state. Record the measured first-clip latency using the benchmark guide.
-
-This repository includes deployment configuration. It does not establish a provisioned cloud account, live domain, API access, successful cloud deployment, or tested live social publication.
+The final delivery records static build/browser checks, actual rendering checks, repository creation, and Pages deployment status separately. No hosted AI request, social upload, financial result, or successful deployment is inferred from unit tests. Native and browser rendering have different performance characteristics and must be measured independently.

@@ -1,46 +1,53 @@
-# Performance and media validation
+# Native local rendering benchmark
 
-The targets are a publish-ready first clip under 5 minutes, three clips under 10 minutes, and five clips under 15 minutes under defined benchmark conditions. These are engineering goals. Rendering a short generated fixture or passing mocked-provider tests does not demonstrate those targets for campaign media.
+This helper targets the optional Python API/worker edition, not the static GitHub Pages/browser edition. Browser FFmpeg must be measured in the actual tab/device and may stop when the tab closes; native timings do not establish browser performance.
 
-## End-to-end benchmark
+The default benchmark measures one user-selected clip through the real local worker, FFmpeg render, metadata/compliance persistence, and optional download/full decode. It does not call an AI provider in `FREE_MODE=true`, and refuses a hosted-mode server unless `--allow-hosted` is explicitly supplied. No service fee is required for this local path; your computer still uses CPU, electricity, and disk.
 
-Use a configured deployment, an authorized representative video, real hosted AI credentials, and a real campaign brief. Keep a record of source duration, file size, codec, resolution, speech language, content type, clip length/count, AI models, cloud region, CPU/RAM allocation, storage type, queue depth, and whether workers/transcripts are warm or cold. Do not mix cached and uncached runs in one average.
+## Prepare the records
 
-1. Create an account in the running application. Import and analyze the brief. Review ambiguous or contradictory rules; do not remove genuine campaign requirements to obtain PASS.
-2. Upload authorized source media, record the upload time separately, and confirm the media rights. Obtain the campaign and source IDs from their API responses in the browser's developer tools.
-3. Run the measurement helper with the same account. It creates a real paid generation job and polls persisted job and clip records. The password is requested using a hidden prompt.
+1. Run the local application, create an account, and save/review a real campaign brief. Unknown semantic rules must stay review items until supported by evidence.
+2. Upload a representative video that you are authorized to edit and republish. Obtain the campaign/source IDs from their API responses in browser developer tools.
+3. Choose a source range. Optionally prepare an SRT/VTT whose cue times refer to the original source. Its upload happens before the render timer.
+4. Run the helper. The free native workspace requires no login:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\benchmark.py --email you@example.com --campaign-id CAMPAIGN_ID --source-id SOURCE_ID --clips 3 --mode fast --download-first
+.\.venv\Scripts\python.exe scripts\benchmark.py --campaign-id CAMPAIGN_ID --source-id SOURCE_ID --start 10 --end 30 --title "User-selected test clip" --download-first
 ```
 
-For direct API access, use `--base-url http://localhost:8000 --origin http://localhost:3000`. The default frontend URL is `http://localhost:3000`. For a deployed app, use its HTTPS URL. `BENCHMARK_PASSWORD` can supply the password in CI from a secret store; do not put it in command-line arguments or commit it.
+For source-timed captions, add `--subtitles-file 'C:\path\captions.srt'`. To measure the available source beginning capped at 30 seconds, omit `--start` and `--end`. The range is a manual/default choice, not a detected highlight. Free mode accepts one clip per benchmark job.
 
-The helper distinguishes:
+For direct API access use `--base-url http://localhost:8000 --origin http://localhost:3000`. The default base URL is `http://localhost:3000`. The default free local API requires no authentication. For a separately configured authenticated native server, `--email` enables a hidden password prompt; `BENCHMARK_PASSWORD` may supply it through an environment secret. Do not put passwords in command-line arguments or Git.
 
-- **First rendered:** an actual MP4 exists; compliance may still require review.
-- **First compliant:** a rendered clip has a PASS result. Semantic review cannot be skipped to improve the measurement.
-- **Three/five compliant:** enough individual PASS clips are visible; the first does not wait for the batch.
-- **Worker first-clip time:** time recorded by the worker, excluding any preceding queue wait. Client measurements include queue wait.
+## Interpret the output
 
-Measurement begins immediately before the generation request. It includes transcription, planning, rendering, metadata, and compliance. Campaign analysis and source upload happen before this request and must be reported separately. Polling introduces up to the polling interval of uncertainty; default is two seconds. A blocked/failed job or a batch with no PASS clip does not meet the publish-ready target.
+The report distinguishes:
 
-With `--download-first`, the helper downloads the first real clip, inspects its media streams, and fully decodes it through FFmpeg. It records the media inspection and timing JSON under ignored `.runtime/benchmarks/`. The report contains no password, session cookie, or signed download URL. Verify the vertical dimensions, H.264/AAC stream, subtitle timing/readability, relevant framing, content context, required disclosures, and audio quality by watching the result as well.
+- **First rendered:** a real MP4 exists, even if semantic review remains required.
+- **First compliant:** a rendered clip has PASS. Do not erase real rules or skip required review to improve timing.
+- **Worker first-clip time:** elapsed time saved by the worker, excluding earlier queue wait. The client measurement includes that wait.
+- **Download verified:** the first rendered MP4 was downloaded, inspected, and fully decoded by FFmpeg after timing.
 
-Run at least five cold and five warm trials for each representative media category. Report individual values and median/p95 separately, including unsuccessful trials and the sample size. Track actual billed provider and CPU/storage expenses alongside application estimates. A narrow trial set cannot establish general content quality or viral performance.
+Measurement begins before `POST /api/jobs`. Campaign review, source upload, and optional subtitle upload happen first and must be reported separately. The default poll interval adds up to two seconds of observation uncertainty. A blocked/failed job or a REVIEW_REQUIRED result does not meet a publish-ready target.
 
-## Rendering regression test
+Reports and optional MP4s are saved under ignored `.runtime/benchmarks/`. No password, session cookie, or signed download URL is included. Watch the output as well: check framing, source context, subtitle readability and synchronization, disclosure/branding requirements, and sound. A full decode proves playability, not editorial quality or campaign approval.
+
+Record source duration/codec/resolution, selected output duration, CPU/RAM, disk type, caption format, queue depth, and warm/cold state. Report individual trials and median/p95 with failures included. A short synthetic fixture does not establish performance for an hour-long source. The original under-5/10/15-minute targets for one/three/five AI-created compliant clips remain unverified engineering goals; the free local benchmark has different scope.
+
+## Rendering regression tests
 
 ```powershell
 Push-Location backend
-..\.venv\Scripts\python.exe -m pytest tests/test_pipeline.py -q
+..\.venv\Scripts\python.exe -m pytest tests/test_pipeline.py tests/test_free_services.py -q
 Pop-Location
 ```
 
-The FFmpeg regression uses synthetic video/audio test signals generated locally. They are technical fixtures with no third-party footage or license requirement. Real rendering, full decode, vertical output, subtitle timing, and input validation are checked where supported by the installed FFmpeg build. Hosted-provider substitutes in other tests validate request/response logic only.
+Tests use generated video/audio signals without third-party footage. Actual H.264/AAC rendering, full decode, vertical output, input restrictions, and caption behavior are checked where supported by FFmpeg. Remote-provider substitutes only test adapter behavior; they do not establish live access or permission.
 
-## Publishing and submissions
+## Optional hosted benchmark
 
-Run publication tests separately with a channel and media authorized for the test. Confirm OAuth scope, explicit approval, account eligibility, actual published URL/timestamp, duplicate prevention, retries, and failure handling. A provider sandbox or mocked upload is not production upload verification.
+Only if you deliberately enable `FREE_MODE=false`, supply hosted credentials and positive spending limits, and accept possible provider charges, use `--allow-hosted`. The existing `--clips 3`/`--clips 5` options then measure individual compliance milestones. This is outside the no-service-fee workflow. Never assume that an API key, promotional balance, or cloud free tier guarantees no charges.
 
-For a campaign with a submission window, verify the countdown begins at the actual publication timestamp. Check the 15/10/5-minute warning boundaries and the manual submission handoff. A rendered or uploaded clip must never be counted as a confirmed campaign submission.
+## Manual publishing and submissions
+
+Free mode provides upload packages, not direct external publishing. Publish using an authorized platform account and record the actual public URL/time. For a campaign with a submission window, confirm the countdown begins at that actual timestamp and verify the 15/10/5-minute warning boundaries. Publication and confirmed campaign submission remain separate records.

@@ -1,60 +1,50 @@
 # Implementation and verification status
 
-This file distinguishes local software from external services and deployment outcomes. The delivery response records the final test/build results; those results do not establish authorization or operation of external services.
+The user selected a free manual workflow, then requested no login and hosting in a new GitHub repository. The default hosted topology is now a static browser edition; the native Python edition remains optional. Code, unit tests, real rendering, source publication, and live hosting are separate outcomes.
 
-## Included application and deployment code
+## Selected free browser edition
 
-- Next.js frontend and FastAPI API, SQLAlchemy records/migrations, cookie sessions, and owner-scoped media access.
-- Campaign briefs, attachment input, editable extracted rules/evidence, source-rights records, durable database jobs, and a separate worker.
-- Hosted AI service boundaries, structured Edit DNA, FFmpeg rendering/subtitles, metadata, compliance, preview/download, and manual upload packages.
-- Official YouTube OAuth/upload code, manual publication/submission records, campaign deadline handling, and financial record interfaces where implemented.
-- Docker/Compose, PostgreSQL volumes, optional S3 configuration, HTTPS proxy configuration, GitHub Actions, startup and benchmark helpers, and deployment documentation.
+- No login, API key, application subscription, or billable media backend.
+- Static Next.js export for GitHub Pages with FFmpeg WebAssembly assets.
+- Videos and project records stored in IndexedDB on the current browser/device, rather than uploaded to GitHub.
+- Manual clip range/crop and metadata, optional source-timed SRT/VTT, real rendering/preview/download, review-required campaign/compliance evidence, and manual publishing/submission workflows where implemented.
+- Public application source in the dedicated Pages repository; `.env`, credentials, local databases, and user media remain excluded from Git.
 
-Code presence is distinct from live provider verification. Features requiring platform permissions, cloud resources, real media, or a human review remain subject to the setup and limitations below.
+A configured build/workflow is not proof of a successful Pages deployment. The final delivery must report the actual verified repository/URL or remaining blocker. Browser renders require an open tab and available memory/CPU. Closing/reloading may interrupt jobs; clearing/evicting storage or changing profile/device can remove or hide records. There is no cloud backup, sync, or account recovery. Preserve originals and download important results.
 
-## Verification limits
+This mode does not perform AI transcription, best-moment detection, semantic video understanding, or viral prediction. SRT/VTT cue times are supplied by the user; word times are not invented. The workflow uses manual review. It avoids paid service/API requirements but still uses the existing device, electricity, disk, and internet.
 
-Local validation completed on November 15, 2026:
+## Optional free native edition
 
-- 46 backend tests passed, including real FFmpeg H.264/AAC vertical rendering and full decode, audio extraction, timed captions, campaign extraction unit tests, similarity, deterministic compliance, ownership, spending reservations, submission countdowns, and expired publishing approval.
-- The Next.js production build and TypeScript checks passed.
-- Browser checks exercised registration/session creation, campaign saving with unavailable AI, manual evidence-backed rule correction, a rights-confirmed generated test-video upload, queue creation, and the worker's honest missing-key blocked state. Mobile library navigation was checked at 390 pixels.
-- Alembic migrations applied successfully to a fresh SQLite development database. PostgreSQL and multi-host worker operation remain unverified here.
+- `FREE_MODE=true` defaults to local manual processing and blocks hosted AI, S3, and direct social publishing even if old credentials exist.
+- The nonproduction local workspace opens without login. It is a loopback convenience, not permission to expose an unauthenticated backend publicly.
+- FastAPI, local SQLite/files, SQLAlchemy migrations, and a separate durable Python worker provide native FFmpeg rendering and persistent state.
+- Optional local Docker/Compose uses PostgreSQL and shared media volumes. Docker is not required for the browser edition.
+- Recorded post URLs/timestamps, submission countdowns, views CSV, and evidence-backed financial records remain distinct from actual publication, payment eligibility, and confirmed submission.
 
-The infrastructure helpers were checked for PowerShell/Python syntax, and the benchmark helper's missing-server path was exercised. Docker was unavailable, so image builds, Compose startup, HTTPS provisioning, and cloud operation were not verified locally. CI includes image builds to check the supplied Dockerfiles when connected to GitHub. Windows sandbox process/socket restrictions required approved local execution for the production build and FastAPI test client.
+## Verification record
 
-## MVP boundaries
+The earlier hosted-adapter MVP was validated on November 15, 2026 with 46 backend tests, a passing production build/TypeScript check, SQLite migrations, and browser checks including actual source upload/queueing and the honest missing-key state. Those historical checks do not verify later free/no-login/browser changes. Current results belong in the final delivery after the corresponding checks actually complete.
 
-- AI requires a configured cloud provider. No real hosted AI request or social upload was made during verification. Unit-test providers do not represent production authorization.
-- Vision uses sampled frames and scene-directed crop/zoom. Continuous face tracking, reliable automatic gameplay event detection, advanced noise cleanup, and learned performance optimization are future extensions.
-- Campaign URLs are reference links. Supply pasted requirements, a text-extractable PDF, or screenshots; private pages are not scraped. Scanned PDFs need screenshots or pasted text.
-- Metadata controls support platform variants, manual field edits, and regeneration of the complete metadata set. Individual AI field regeneration is not yet exposed.
-- Analytics use recorded posts and explicit CSV/manual records; live platform analytics, screenshot earnings extraction, and automatic shared-pool/retainer settlement are not implemented. Provider token usage is audited; monetary expenses require reported cost records.
-- Retention is a deployment policy value. Temporary render files are cleaned by context managers; permanent source/version deletion is not automated. Configure S3 lifecycle policies or reviewed operator cleanup while preserving required originals and campaign evidence.
-- Account registration is open. Add email verification, password recovery, tenant administration, distributed rate limiting, and a production security review before offering a public subscription service.
-- YouTube code supports official OAuth/resumable uploads and conservative retries. If processing/publication is not confirmed, the job remains pending for operator review; no submission countdown is invented. TikTok, Instagram, and Content Rewards use manual packages/submissions.
-- Source uploads use authenticated, bounded API requests. S3 download URLs are signed; direct-to-S3 signed multipart uploads are a future optimization.
+The native benchmark helper was checked for Python compilation/CLI help, guarded against starting a hosted job without explicit permission, and verified to construct a manual local payload in test-only fake-client checks. Those checks are not a live render benchmark. Docker was unavailable during the original run; containers, PostgreSQL, HTTPS provisioning, and cloud operation remain unverified unless later actual results say otherwise.
 
-## Scope limits
+The final browser checks must distinguish a static build from actual FFmpeg WebAssembly output, IndexedDB persistence, no-login behavior, and the verified Pages deployment. Native FFmpeg tests cannot stand in for browser-engine tests, and native timing cannot be reported as browser timing.
 
-- Visual analysis samples four source frames in FAST mode and eight in QUALITY mode; QUALITY also measures FFmpeg scene cuts. Crop/zoom decisions use those samples. Continuous face or subject tracking is not implemented.
-- Campaign URLs are stored as references. Import the actual requirements as pasted text, a text PDF, or screenshots; the app does not scrape campaign pages. Scanned PDFs need screenshots or pasted text, and screenshot/OCR evidence requires review.
-- The default transcription workflow requires a compatible `verbose_json` provider response with word timestamps. The hosted AI path has not been verified without credentials.
-- Job spending reservations are conservative admission controls, not provider-enforced billing ceilings. Reconcile actual invoices and configure billing limits at the provider. Review the paid-operation coverage before public multi-user deployment.
-- Worker crash recovery uses a 30-minute processing lease. Automatic retention scheduling and distributed/multiple-worker operation require further operational validation.
+## Boundaries and remaining work
 
-## External setup still required
+- Local campaign parsing only recognizes explicit text patterns and retains source evidence. Unknown/contradictory rules need review. URLs are references; private pages are not scraped. Scanned documents/screenshots need manual rule entry in free mode where OCR is unavailable.
+- A default/manual range is not a detected highlight. Context, source rights, framing, audio restrictions, branding, disclosures, and draft approval still need evidence-backed review.
+- Without supplied timed captions, no transcription occurs. Caption-cue synchronization does not establish word-level speech alignment.
+- Financial entries and views use explicit records/imports. Reported views do not establish payment eligibility. The app does not invent earnings, payouts, provider charges, or live analytics.
+- Permanent source/version deletion is not automated. Native temporary files are cleaned by context managers; browser storage may be cleared independently by the browser/user.
+- Continuous tracking, automatic gameplay event detection, learned optimization, live platform analytics, screenshot earnings extraction, automatic shared-pool/retainer settlement, and automatic Content Rewards submission are not implemented.
+- Browser queues require the tab to stay open. Native lease/recovery behavior, database sharing, and multi-host scaling are separate concerns requiring validation before production use.
+- A public native SaaS deployment would require appropriate authentication, account recovery, email verification, tenant administration, distributed rate limiting, security review, and infrastructure costs. It is outside the chosen free Pages path.
 
-- A hosted AI API key and supported transcription/model configuration for real automatic analysis.
-- An authorized source video and campaign brief for a credentialed workflow benchmark.
-- Google OAuth project credentials, token encryption key, eligible channel, and explicit user publication approval for YouTube.
-- Approved official API access before automatic TikTok/Instagram integration; use manual packages otherwise.
-- A real official Content Rewards integration before claiming automatic submission. Manual submission must be confirmed by the user.
-- Cloud hosting, domain/DNS, secrets, and backups for a live deployment.
-- Creation and connection of the dedicated GitHub repository; the available tools do not provide repository creation and the GitHub CLI was unavailable.
+## Optional external native adapters
 
-No production integration, API permission, provider expenditure, published post, cloud deployment, earnings, or performance target is inferred from unit tests or empty dashboard records.
+Hosted AI, cloud vision, official YouTube resumable publishing, and S3 remain disabled by default. Explicitly enabling `FREE_MODE=false` requires credentials, positive spending limits, eligibility, and authorization and can incur charges. No live provider request, social upload, campaign approval, monetary result, or deployment is inferred from unit tests.
 
-## Performance targets
+## Performance
 
-Under five minutes for the first publish-ready clip, ten minutes for three, and fifteen minutes for five are engineering goals. They have not been established for representative campaign media in a provisioned cloud environment. Follow [the benchmark instructions](BENCHMARK.md) to measure a configured deployment.
+The original 5/10/15-minute goals for one/three/five AI-produced compliant clips were not established with representative media/credentials. The native free benchmark measures one manual range through the real API/worker. The browser edition must be measured in the actual target browser/device with its tab open. REVIEW_REQUIRED results must not be reported as publish-ready performance successes.

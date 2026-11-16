@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session as DBSession
 from .db import get_db
 from .models import Session, User, now
 from .config import settings
+from .runtime import local_no_auth
+from sqlalchemy.exc import IntegrityError
 
 COOKIE = 'acf_session'
 _attempts = defaultdict(deque)
@@ -49,6 +51,8 @@ def create_session(db, user, response):
     response.set_cookie(COOKIE, raw, httponly=True, secure=settings.production, samesite='lax', max_age=604800, path='/')
 
 def current_user(request: Request, db: DBSession = Depends(get_db)) -> User:
+    if local_no_auth():
+        return local_workspace_user(request,db)
     raw = request.cookies.get(COOKIE)
     if not raw:
         raise HTTPException(401, 'Sign in to continue.')
@@ -58,6 +62,30 @@ def current_user(request: Request, db: DBSession = Depends(get_db)) -> User:
     user = db.get(User, session.user_id)
     if not user:
         raise HTTPException(401, 'Sign in to continue.')
+    return user
+
+
+def local_workspace_user(request,db):
+    # Preserve the current local user's campaigns when switching off login.
+    users=list(db.scalars(select(User).order_by(User.created_at)))
+    existing=next((u for u in users if u.preferences.get('local_workspace_owner') is True),None)
+    if existing:
+        return existing
+    raw=request.cookies.get(COOKIE)
+    session=db.scalar(select(Session).where(Session.token_hash==token_hash(raw),Session.expires_at>now())) if raw else None
+    user=db.get(User,session.user_id) if session else users[0] if users else None
+    if user is None:
+        user=User(id='local-workspace',email='local-workspace@localhost.invalid',name='Local workspace',password_hash='!local-workspace-no-password',preferences={'local_workspace_owner':True})
+        db.add(user)
+    else:
+        user.preferences={**user.preferences,'local_workspace_owner':True}
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        user=db.get(User,'local-workspace')
+        if user is None:
+            raise
     return user
 
 def check_origin(request: Request):

@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from .config import settings
+from .runtime import free_mode
 
 def local_path(key: str) -> Path:
     path = (settings.media_root / key).resolve()
@@ -15,11 +16,13 @@ def local_path(key: str) -> Path:
     return path
 
 def s3_client():
+    if free_mode():
+        raise ValueError('Cloud storage is disabled in free mode. Files stay on your local disk.')
     import boto3
     return boto3.client('s3', endpoint_url=os.getenv('S3_ENDPOINT') or None, region_name=os.getenv('S3_REGION', 'us-east-1'))
 
 def put_file(path: Path, key: str):
-    if os.getenv('S3_BUCKET'):
+    if not free_mode() and os.getenv('S3_BUCKET'):
         s3_client().upload_file(str(path), os.environ['S3_BUCKET'], key, ExtraArgs={'ServerSideEncryption': 'AES256'})
     else:
         dest = local_path(key)
@@ -28,14 +31,14 @@ def put_file(path: Path, key: str):
             shutil.copyfile(path, dest)
 
 def delete_file(key: str):
-    if os.getenv('S3_BUCKET'):
+    if not free_mode() and os.getenv('S3_BUCKET'):
         s3_client().delete_object(Bucket=os.environ['S3_BUCKET'], Key=key)
     else:
         local_path(key).unlink(missing_ok=True)
 
 @contextmanager
 def materialize(key: str):
-    if not os.getenv('S3_BUCKET'):
+    if free_mode() or not os.getenv('S3_BUCKET'):
         path = local_path(key)
         if not path.is_file():
             raise FileNotFoundError('Media is no longer available.')
@@ -47,7 +50,7 @@ def materialize(key: str):
         yield target
 
 def signed_url(key: str, expires=900) -> str | None:
-    if os.getenv('S3_BUCKET'):
+    if not free_mode() and os.getenv('S3_BUCKET'):
         return s3_client().generate_presigned_url('get_object', Params={'Bucket': os.environ['S3_BUCKET'], 'Key': key}, ExpiresIn=expires)
     return None
 

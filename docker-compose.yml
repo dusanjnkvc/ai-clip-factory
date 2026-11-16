@@ -22,6 +22,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://clipfactory:${POSTGRES_PASSWORD}@db:5432/clipfactory
       MEDIA_ROOT: /data/media
+      FREE_MODE: ${FREE_MODE:-true}
       FRONTEND_URL: ${PUBLIC_URL:-http://localhost:3000}
       API_BASE_URL: ${PUBLIC_URL:-http://localhost:3000}
     command: ["alembic", "upgrade", "head"]
@@ -38,6 +39,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://clipfactory:${POSTGRES_PASSWORD}@db:5432/clipfactory
       MEDIA_ROOT: /data/media
+      FREE_MODE: ${FREE_MODE:-true}
       FRONTEND_URL: ${PUBLIC_URL:-http://localhost:3000}
       API_BASE_URL: ${PUBLIC_URL:-http://localhost:3000}
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
@@ -62,6 +64,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://clipfactory:${POSTGRES_PASSWORD}@db:5432/clipfactory
       MEDIA_ROOT: /data/media
+      FREE_MODE: ${FREE_MODE:-true}
       FRONTEND_URL: ${PUBLIC_URL:-http://localhost:3000}
       API_BASE_URL: ${PUBLIC_URL:-http://localhost:3000}
     command: ["python", "-m", "app.worker"]

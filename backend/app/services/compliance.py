@@ -45,7 +45,8 @@ def check_compliance(
     valid_media = render_info.get("width") == 1080 and render_info.get("height") == 1920 and render_info.get("has_audio") is True and render_info.get("decode_verified") is True and render_info.get("codec") in {"h264", "avc1"}
     add("video_format", "PASS" if valid_media else "FAIL", "Decoded 1080 × 1920 H.264 video with audio." if valid_media else "A verified playable 1080 × 1920 H.264 render with audio is required.")
     if clip.subtitles_enabled and clip.transcript_excerpt.strip():
-        add("subtitle_sync", "PASS" if render_info.get("subtitle_synchronized") is True else "FAIL", "Subtitles use provider word timestamps mapped through the editing timeline." if render_info.get("subtitle_synchronized") else "Speech was selected but synchronized subtitles were not verified.")
+        timing = "Supplied subtitle cue timestamps are mapped through the editing timeline; word alignment was not inferred." if render_info.get("subtitle_timing") == "cue" else "Subtitles use provider word timestamps mapped through the editing timeline."
+        add("subtitle_sync", "PASS" if render_info.get("subtitle_synchronized") is True else "FAIL", timing if render_info.get("subtitle_synchronized") else "Speech was selected but synchronized subtitles were not verified.")
 
     if campaign.allowed_platforms:
         add("platforms", "PASS", "Campaign permits: " + ", ".join(campaign.allowed_platforms))

@@ -1,31 +1,64 @@
 # AI Clip Factory
 
-A Next.js and FastAPI application for turning authorized source media and campaign requirements into vertical clips. Video processing runs in a separate CPU worker using FFmpeg and hosted AI; no local language model or GPU is required.
+A free, manual clipping workspace with **no login, paid AI API, or subscription requirement**. The GitHub Pages edition stores your videos and project records in your browser and renders clips there with FFmpeg WebAssembly. It needs no Python server, cloud worker, OpenAI key, or local AI model.
 
-This checkout is independent of LogEN. It does not contain credentials or an existing deployment. See [implementation status](docs/STATUS.md) for verified features, external setup requirements, and remaining limitations.
+The workflow uses manual clip selection/review, optional supplied SRT/VTT subtitles, and user-authored metadata. It does not claim AI transcription, best-moment detection, semantic video understanding, or viral scoring. Your existing device, electricity, disk, and internet are still needed. See [implementation status](docs/STATUS.md) for verification and limitations. This project is separate from LogEN.
 
-## Start with Docker
+## Open the browser edition
 
-Requirements: Docker Engine/Desktop with Compose v2 and a hosted AI API key for automatic generation.
+After the dedicated GitHub repository’s Pages deployment succeeds, open its published Pages URL. **A configured workflow is not proof that the site is already deployed**; the final delivery supplies the actual verified address or any remaining setup.
 
-1. Copy `.env.example` to `.env`.
-2. Replace `APP_SECRET` with a random secret of at least 32 characters and `POSTGRES_PASSWORD` with a random URL-safe password. Set `OPENAI_API_KEY`. The optional YouTube and S3 settings can remain blank.
-3. Start the stack:
+No account or API key is required:
+
+1. Add a campaign brief and review its rules. The local parser can copy obvious, explicitly supplied requirements; correct missing or ambiguous fields yourself.
+2. Choose a video you own or are authorized to edit and republish, and record the rights evidence.
+3. Set the source start/end, crop, subtitle style, title, and description. A blank end uses up to 30 available seconds from your start; this is a default range, not a detected highlight.
+4. Optionally supply an SRT/VTT file with cue times relative to the original source. Without that file, the free workflow does not transcribe speech or invent captions.
+5. Keep the tab open while FFmpeg renders. Preview the real MP4, review compliance, and download the clip/upload package.
+6. Publish manually through your authorized platform account. Record the actual public URL and publication time, then complete the campaign submission separately.
+
+## Where browser data lives
+
+Videos, clips, and project records stay in **IndexedDB in the current browser profile on this device**. Choosing a video does not upload it to GitHub or the repository. The site downloads its app/FFmpeg assets; media rendering happens on your device. GitHub hosts public application files, not a private video-processing backend.
+
+Clearing this site’s browser storage, changing browser/profile/device, using private browsing, or browser storage eviction can remove or make records unavailable. Download important outputs and preserve your originals elsewhere. There is no cross-device sync, account recovery, or automatic cloud backup. Anyone with access to the same browser profile may access its local records.
+
+The browser renderer needs available memory and CPU. Large/high-resolution sources can exceed browser limits or be slow; use shorter source files when necessary. Keep the tab open. Closing/reloading during a render can interrupt it: this browser queue is not a durable cloud worker. No runtime or publish-ready guarantee follows from a successful short fixture.
+
+## GitHub Pages hosting
+
+The chosen free hosting path uses a **public repository** named `ai-clip-factory`. Its application source is public. Secrets, `.env`, uploaded media, local databases, build outputs, and browser data must stay out of Git. A public source repository does not publish your browser’s IndexedDB videos.
+
+The Pages workflow builds a static Next.js export with `NEXT_PUBLIC_BROWSER_MODE=true` and `NEXT_PUBLIC_BASE_PATH=/ai-clip-factory`, includes the local FFmpeg assets, and deploys `frontend/out`. In the repository’s **Settings → Pages**, select **GitHub Actions** as the build/deployment source if it is not already set. The final URL is available only after a successful deployment.
+
+If repository creation/connection is still needed, create an empty public `ai-clip-factory` repository under `dusanjnkvc`, without an initialized README/license/gitignore, then run from this checkout:
 
 ```sh
-docker compose up -d --build
-docker compose logs -f api worker
+git remote add origin https://github.com/dusanjnkvc/ai-clip-factory.git
+git push -u origin main
 ```
 
-Open [localhost:3000](http://localhost:3000), create an account, and add a campaign brief. Upload a video that you own or are authorized to reuse, confirm its rights, and choose **Generate FAST**. The first clip becomes available independently while later clips continue processing. Every clip retains its campaign rules and compliance results.
+For an installed, authenticated GitHub CLI:
 
-The database migration runs before the API and worker start. PostgreSQL and media persist in Docker volumes. `docker compose down` preserves those volumes; deleting them removes stored records and media.
+```sh
+gh repo create dusanjnkvc/ai-clip-factory --public --source . --remote origin --push
+```
 
-Without an AI key you can inspect the dashboard and save records, but automatic campaign analysis, transcription, and clip creation report missing configuration. Processing progress represents persisted work, not a timed demonstration. Official platform credentials and explicit approval are required for publishing.
+Use these commands only when the matching repository/remote does not already exist. Inspect `git status` before pushing. Pages service quotas/availability apply; the application does not configure paid AI or a billable server. See [deployment notes](docs/DEPLOYMENT.md).
 
-## Start on Windows without Docker
+## Optional local Python edition
 
-Install Node.js 22 or later, Python 3.12, and FFmpeg/ffprobe with libass and libx264. From the project directory:
+The local server edition remains available for native FFmpeg and a persistent local database/worker. Its free development configuration opens a local workspace without a login. Use it when browser memory or performance is unsuitable.
+
+For this prepared checkout, keep `FREE_MODE=true`, leave cloud credentials blank, and run:
+
+```powershell
+.\scripts\dev.ps1
+```
+
+Open [localhost:3000](http://localhost:3000). The launcher loads `.env` as data, applies migrations, starts the API and worker, and serves Next.js. Logs are in ignored `.runtime/`; Ctrl+C stops the processes.
+
+For a clean checkout, install Node.js 22 or later and Python 3.12:
 
 ```powershell
 python -m venv .venv
@@ -36,17 +69,17 @@ Pop-Location
 Copy-Item .env.example .env
 ```
 
-Edit `.env` as described above, then run:
+Use a random `APP_SECRET` of at least 32 characters, keep `FREE_MODE=true`, and leave `OPENAI_API_KEY=` blank. The Python packages include an FFmpeg fallback on supported Windows systems; installed FFmpeg/ffprobe with libass and libx264 is also supported. No AI model is downloaded. Pass `-Python 'C:\path\python.exe'` to the launcher if necessary.
 
-```powershell
-.\scripts\dev.ps1
-```
+Optional local Docker/Compose runs PostgreSQL and the native CPU worker on your computer. Replace `POSTGRES_PASSWORD` with a random value before `docker compose up -d --build`. Docker is not required for the browser edition; its licensing depends on your use. Container volumes retain local records/media until explicitly removed.
 
-The script loads `.env` as data, applies migrations, starts the API and worker, and serves the frontend. API/worker logs are in ignored `.runtime/`. Press Ctrl+C to stop. If your Python executable has a different path, pass `-Python 'C:\path\python.exe'`.
+## No paid services by default
 
-For separate terminals, load your `.env` settings into each terminal, then run `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000` and `python -m app.worker` from `backend/`, and `npm run dev` from `frontend/`. Run `python -m alembic upgrade head` in `backend/` before the first start. API documentation is at [localhost:8000/docs](http://localhost:8000/docs).
+In the native edition, `FREE_MODE=true` is the default even when no variable is supplied. It blocks hosted AI, external S3 operations, and direct social publishing even if old credentials exist. Local files, manual metadata, compliance review, packages, recorded URLs, manual submissions, and explicit analytics imports remain available.
 
-## Validation
+Optional hosted adapters remain in the source. They need explicit `FREE_MODE=false`, credentials, positive spending limits, and user authorization, and can incur charges. They are not part of the browser edition or selected free workflow. A public backend deployment would need its own security, authentication, infrastructure, and cost review.
+
+## Validation and benchmarks
 
 ```powershell
 Push-Location backend
@@ -57,39 +90,12 @@ npm.cmd run build
 Pop-Location
 ```
 
-The media test uses generated FFmpeg test signals, so it needs no third-party media license. Tests that use substitutes for remote AI or OAuth validate application behavior only; they do not establish that a provider or social account is authorized. Live AI generation and YouTube publishing need separate credentialed checks.
+The original hosted-adapter MVP had 46 passing backend tests. That historical result does not verify later free/browser changes; current test/build/browser results are recorded in the final delivery and [status](docs/STATUS.md). Technical render fixtures use generated video/audio without third-party footage. No unit test establishes live social permissions, campaign approval, earnings, or a cloud deployment.
 
-Verified locally: **46 backend tests pass**, TypeScript checks pass, and the frontend production build succeeds. Browser verification covered account creation, campaign correction, an authorized test-media upload, a real queued job, the missing-provider blocked state, and mobile navigation. See [status and MVP boundaries](docs/STATUS.md) before using real campaigns.
+The [native benchmark](docs/BENCHMARK.md) uses the optional local API/worker and is separate from browser rendering. It defaults to one manual range and refuses hosted jobs unless explicitly allowed. Browser renders must be measured in the actual browser/device with the tab open; do not reuse native-worker timings as browser results.
 
-The local `.env` generated during development contains random application secrets and points to a fresh `ai-clip-factory.db`. Cloud credentials remain empty. `.env`, databases, test accounts, media, and build outputs are ignored by Git.
+## Real performance and financial records
 
-## Import performance and financial records
+Where the selected edition exposes imports, use a UTF-8 views CSV with `post_url,reported_views,eligible_views,likes,shares`; only the first two columns are required. URLs must already be recorded. Eligible views cannot exceed reported views, and reported views do not establish payment eligibility.
 
-In **Earnings & Analytics**, use **Import views CSV** with a UTF-8 CSV containing `post_url,reported_views,eligible_views,likes,shares`. Only `post_url` and `reported_views` are required. The post URL must already be recorded in your workspace; eligible views cannot exceed reported views. Imports add dated observations and do not establish payment eligibility.
-
-Use **Add record** for estimated earnings, confirmed earnings, an actual payout, or a reported processing expense. Supply campaign/report/invoice evidence. Financial records are additive; enter each amount once. Dashboard summaries include USD records only. Provider token usage is stored separately in the audit log and is not converted into invented dollar charges. Workspace spending reservations can be lowered in **Settings**; configure provider-side billing limits as well.
-
-See [benchmark instructions](docs/BENCHMARK.md), [cloud deployment](docs/DEPLOYMENT.md), and [architecture](docs/ARCHITECTURE.md). GitHub Actions performs the backend tests and frontend production build.
-
-## Connect the intended GitHub repository
-
-GitHub access was inspected, but the available connector does not create repositories and `gh` was not installed. The project can be committed locally without changing any other repository.
-
-Create a **private**, empty repository named `ai-clip-factory` under `dusanjnkvc` at [GitHub's new repository page](https://github.com/new). Do not initialize it with a README, license, or gitignore. From this directory:
-
-```sh
-git remote add origin https://github.com/dusanjnkvc/ai-clip-factory.git
-git push -u origin main
-```
-
-If the local checkout has not yet been initialized:
-
-```sh
-git init -b main
-git add .
-git commit -m "Build AI Clip Factory vertical slice"
-git remote add origin https://github.com/dusanjnkvc/ai-clip-factory.git
-git push -u origin main
-```
-
-With an installed and authenticated GitHub CLI, `gh repo create dusanjnkvc/ai-clip-factory --private --source . --remote origin --push` creates and connects it in one step. Inspect `git status` before committing; keep `.env`, uploaded media, tokens, local databases, and `.runtime/` untracked.
+Financial records need actual report/invoice evidence. Estimated earnings, confirmed amounts, received payouts, and reported expenses remain distinct. Records are additive, so enter an amount once. USD summaries do not convert other currencies. Local processing does not create an invented paid-provider charge.
