@@ -24,6 +24,15 @@ This mode does not perform AI transcription, best-moment detection, semantic vid
 
 ## Verification record
 
+Current validation on November 16, 2026:
+
+- 80 backend tests pass, including a real native free-mode render with supplied cue captions, a zero-spending allowance, disabled external services, and no-login workspace checks.
+- 15 browser-rule boundary tests pass. TypeScript and the static GitHub Pages build pass.
+- The exact static build was opened without login. A generated, rights-safe source was stored in IndexedDB, rendered by the browser's real FFmpeg WebAssembly engine with pasted SRT cue captions, and downloaded.
+- The downloaded MP4 was independently inspected and fully decoded using native FFmpeg: 1080 × 1920, H.264, audio present, 1.83 seconds, 440,143 bytes. This is a short fixture, not a real-campaign performance benchmark or campaign approval.
+- Browser persistence survived page reloads, and failed attempts remained visible while their source was preserved. The successful result correctly retains REVIEW_REQUIRED for unresolved campaign semantics.
+- The dedicated public GitHub repository was created and Pages was configured to use Actions. Live deployment verification remains pending until the workflow finishes.
+
 The earlier hosted-adapter MVP was validated on November 15, 2026 with 46 backend tests, a passing production build/TypeScript check, SQLite migrations, and browser checks including actual source upload/queueing and the honest missing-key state. Those historical checks do not verify later free/no-login/browser changes. Current results belong in the final delivery after the corresponding checks actually complete.
 
 The native benchmark helper was checked for Python compilation/CLI help, guarded against starting a hosted job without explicit permission, and verified to construct a manual local payload in test-only fake-client checks. Those checks are not a live render benchmark. Docker was unavailable during the original run; containers, PostgreSQL, HTTPS provisioning, and cloud operation remain unverified unless later actual results say otherwise.

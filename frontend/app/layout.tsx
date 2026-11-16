@@ -1,4 +1,4 @@
 import type { Metadata } from "next";
 import "./globals.css";
-export const metadata: Metadata = { title: "AI Clip Factory — Creative control. At cloud speed.", description: "Turn authorized source videos into distinctive, campaign-ready clips. Analyze, create, review, and publish in one workspace." };
+export const metadata: Metadata = { title: "AI Clip Factory — Free local video editing.", description: "Create vertical clips from authorized videos with local FFmpeg processing, manual review, and optional subtitle files. No paid AI API is required." };
 export default function RootLayout({ children }: Readonly<{children: React.ReactNode}>) { return <html lang="en"><body>{children}</body></html>; }

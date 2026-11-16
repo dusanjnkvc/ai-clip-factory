@@ -27,9 +27,13 @@ The browser renderer needs available memory and CPU. Large/high-resolution sourc
 
 ## GitHub Pages hosting
 
+The dedicated repository is [dusanjnkvc/ai-clip-factory](https://github.com/dusanjnkvc/ai-clip-factory).
+
 The chosen free hosting path uses a **public repository** named `ai-clip-factory`. Its application source is public. Secrets, `.env`, uploaded media, local databases, build outputs, and browser data must stay out of Git. A public source repository does not publish your browser’s IndexedDB videos.
 
 The Pages workflow builds a static Next.js export with `NEXT_PUBLIC_BROWSER_MODE=true` and `NEXT_PUBLIC_BASE_PATH=/ai-clip-factory`, includes the local FFmpeg assets, and deploys `frontend/out`. In the repository’s **Settings → Pages**, select **GitHub Actions** as the build/deployment source if it is not already set. The final URL is available only after a successful deployment.
+
+To reproduce its static build locally, run `npm ci`, `node --test scripts/test-browser.mjs`, and `npm run build:pages` from `frontend/`. Preparation copies the single-thread FFmpeg core and worker modules and packages the caption font for same-origin loading. Notices are included in `ffmpeg/LICENSES.txt` and `ffmpeg/FONT-LICENSE.txt`; FFmpeg core uses GPL-2.0-or-later and Noto Sans uses SIL OFL 1.1.
 
 If repository creation/connection is still needed, create an empty public `ai-clip-factory` repository under `dusanjnkvc`, without an initialized README/license/gitignore, then run from this checkout:
 

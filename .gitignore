@@ -23,6 +23,7 @@ coverage/
 .coverage
 htmlcov/
 *.tsbuildinfo
+frontend/public/ffmpeg/
 
 # Uploaded and generated media, database and local runtime state
 data/

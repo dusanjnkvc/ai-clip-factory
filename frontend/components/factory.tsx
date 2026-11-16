@@ -8,6 +8,11 @@ import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, AudioLines, Bell, 
 
 
 
+import { api, downloadArtifact } from "@/lib/api";
+import LocalCreateFlow from "./local-create-flow";
+import ManualRuleFields from "./manual-rule-fields";
+import WorkspaceSettings from "./workspace-settings";
+
 type Row = Record<string, any>;
 
 type Section = "Dashboard" | "Content Rewards" | "Create Clips" | "Video Library" | "Generated Clips" | "AI Video Editor" | "Publishing Queue" | "Connected Accounts" | "Submissions" | "Earnings & Analytics" | "Settings";
@@ -19,16 +24,6 @@ const navigation: { name: Section; icon: typeof LayoutDashboard; group?: string 
   { name: "Publishing Queue", icon: Send, group: "DISTRIBUTE" }, { name: "Connected Accounts", icon: Users }, { name: "Submissions", icon: CheckCheck }, { name: "Earnings & Analytics", icon: Coins }, { name: "Settings", icon: Settings2, group: "WORKSPACE" },
 
 ];
-
-async function api(path: string, options: RequestInit = {}) {
-
-  const res = await fetch(`/api${path}`, { credentials: "include", ...options, headers: options.body instanceof FormData ? options.headers : { "Content-Type": "application/json", ...options.headers } });
-
-  if (!res.ok) { let detail; try { detail = (await res.json()).detail; } catch { detail = `Service returned ${res.status}`; } throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail)); }
-
-  return res.status === 204 ? null : res.json();
-
-}
 
 const list = (value: any): Row[] => Array.isArray(value) ? value : value?.items || [];
 
@@ -87,7 +82,10 @@ export default function Factory() {
   useEffect(() => { if (toast) { const timer = setTimeout(() => setToast(""), 6500); return () => clearTimeout(timer); } }, [toast]);
 
   const refresh = useCallback(async () => {
-
+    try {
+      const health = await api("/health");
+      if (typeof health.local_no_auth === "boolean") setConfiguration(previous => ({...previous, free_mode:health.free_mode,local_no_auth:health.local_no_auth,browser_mode:health.browser_mode}));
+    } catch { /* The actual workspace request supplies its own connection state. */ }
     try {
 
       const me = await api("/auth/me"); setUser(me); setConnected(true);
@@ -128,7 +126,7 @@ export default function Factory() {
 
   function go(next: Section) { setSection(next); setSideOpen(false); setSelected(null); }
 
-  function newWork(onlyCampaign = false) { if (!user) { setAuth(true); return; } setCampaignOnly(onlyCampaign); setCreating(true); }
+  function newWork(onlyCampaign = false) { if (!user && !localNoAuth) { setAuth(true); return; } setCampaignOnly(onlyCampaign); setCreating(true); }
 
   const metrics = data.metrics || {};
 
@@ -141,6 +139,9 @@ export default function Factory() {
   const config = { ...data.configuration, ...configuration };
 
   const aiReady = config.ai === true || config.ai?.configured === true;
+  const freeMode = config.free_mode !== false;
+  const localNoAuth = freeMode && config.local_no_auth !== false;
+  const sectionLabel = freeMode && section === "AI Video Editor" ? "Video Editor" : section;
 
   const [help, setHelp] = useState(false);
 
@@ -154,27 +155,27 @@ export default function Factory() {
 
     <aside id="workspace-navigation" className={`sidebar ${sideOpen ? "open" : ""}`}>
 
-      <button className="brand" onClick={() => go("Dashboard")}><span className="brand-mark"><Clapperboard size={21} /></span><span>clip<span className="brand-light">factory</span><small>AI CREATIVE WORKSPACE</small></span></button>
+      <button className="brand" onClick={() => go("Dashboard")}><span className="brand-mark"><Clapperboard size={21} /></span><span>clip<span className="brand-light">factory</span><small>{freeMode ? "FREE LOCAL WORKSPACE" : "AI CREATIVE WORKSPACE"}</small></span></button>
 
-      <button className="workspace-switch" onClick={() => { if (!user) setAuth(true); else go("Settings"); }}><span className="workspace-avatar">{user?.name?.[0]?.toUpperCase() || "W"}</span><span>{user?.name ? `${user.name.split(" ")[0]}'s workspace` : "Your workspace"}<small>Personal workspace</small></span><ChevronDown size={14} /></button>
+      <button className="workspace-switch" onClick={() => { if (!user && !localNoAuth) setAuth(true); else go("Settings"); }}><span className="workspace-avatar">{user?.name?.[0]?.toUpperCase() || "W"}</span><span>{user?.name ? `${user.name.split(" ")[0]}'s workspace` : "Your workspace"}<small>Personal workspace</small></span><ChevronDown size={14} /></button>
 
-      <nav aria-label="Main navigation">{navigation.map(({ name, icon: Icon, group }) => <div key={name}>{group && <div className="nav-group">{group}</div>}<button aria-current={section === name ? "page" : undefined} className={`nav-item ${section === name ? "active" : ""}`} onClick={() => go(name)}><Icon size={17} strokeWidth={1.7} /><span>{name}</span>{name === "Create Clips" && <span className="nav-new">AI</span>}{name === "Publishing Queue" && metrics.scheduled > 0 && <span className="nav-count">{metrics.scheduled}</span>}</button></div>)}</nav>
+      <nav aria-label="Main navigation">{navigation.map(({ name, icon: Icon, group }) => <div key={name}>{group && <div className="nav-group">{group}</div>}<button aria-current={section === name ? "page" : undefined} className={`nav-item ${section === name ? "active" : ""}`} onClick={() => go(name)}><Icon size={17} strokeWidth={1.7} /><span>{freeMode && name === "AI Video Editor" ? "Video Editor" : name}</span>{name === "Create Clips" && <span className="nav-new">{freeMode ? "LOCAL" : "AI"}</span>}{name === "Publishing Queue" && metrics.scheduled > 0 && <span className="nav-count">{metrics.scheduled}</span>}</button></div>)}</nav>
 
-      <div className="sidebar-bottom"><div className="cloud-note"><span className="cloud-note-icon"><Cloud size={18} /></span><div>Built for the cloud<small>No local GPU required</small></div><span className="tiny-dot" /></div><button className="help-link" onClick={() => setHelp(true)}><CircleHelp size={16} />Help & getting started<ArrowUpRight size={13} /></button><button className="profile" onClick={() => user ? go("Settings") : setAuth(true)}><span className="avatar">{user?.name?.[0]?.toUpperCase() || "Y"}</span><span>{user?.name || "Your creative workspace"}<small>{user?.email || "Sign in to get started"}</small></span><MoreHorizontal size={18} /></button></div>
+      <div className="sidebar-bottom"><div className="cloud-note"><span className="cloud-note-icon"><Cloud size={18} /></span><div>{freeMode ? "Runs on your computer" : "Built for the cloud"}<small>{freeMode ? "No paid API calls · CPU rendering" : "No local GPU required"}</small></div><span className="tiny-dot" /></div><button className="help-link" onClick={() => setHelp(true)}><CircleHelp size={16} />Help & getting started<ArrowUpRight size={13} /></button><button className="profile" onClick={() => user || localNoAuth ? go("Settings") : setAuth(true)}><span className="avatar">{user?.name?.[0]?.toUpperCase() || (localNoAuth ? "L" : "Y")}</span><span>{localNoAuth ? "Local workspace" : user?.name || "Your creative workspace"}<small>{localNoAuth ? "Opens directly · saved on this device" : user?.email || "Sign in to get started"}</small></span><MoreHorizontal size={18} /></button></div>
 
     </aside>
 
 
 
-    <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" aria-controls="workspace-navigation" aria-expanded={sideOpen} onClick={() => setSideOpen(true)}><Menu size={20} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{section}</strong></div><div className="top-actions"><span className={`connection ${connected ? "online" : ""}`}><span />{connected ? "Workspace connected" : "Local workspace"}</span><div className="notification-wrap"><button className="icon-button" aria-label="Notifications" onClick={() => setNotifications(!notifications)}><Bell size={18} />{jobs.some(j => j.status === "failed") && <i />}</button>{notifications && <div className="notification-popover"><h3>Workspace activity</h3>{jobs.length ? jobs.slice(0, 4).map(j => <p key={j.id}><b>{status(j.status)}</b><br />{j.error || j.stage || "Processing job"}</p>) : <p>You’re all caught up. Processing updates and submission reminders will appear here.</p>}</div>}</div><span className="top-divider" /><button className="avatar small" aria-label={user ? "Account settings" : "Sign in"} onClick={() => user ? go("Settings") : setAuth(true)}>{user?.name?.[0]?.toUpperCase() || "Y"}</button></div></header>
+    <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-menu" aria-label="Open navigation" aria-controls="workspace-navigation" aria-expanded={sideOpen} onClick={() => setSideOpen(true)}><Menu size={20} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{sectionLabel}</strong></div><div className="top-actions"><span className={`connection ${connected ? "online" : ""}`}><span />{connected ? "Workspace connected" : "Local workspace"}</span><div className="notification-wrap"><button className="icon-button" aria-label="Notifications" onClick={() => setNotifications(!notifications)}><Bell size={18} />{jobs.some(j => j.status === "failed") && <i />}</button>{notifications && <div className="notification-popover"><h3>Workspace activity</h3>{jobs.length ? jobs.slice(0, 4).map(j => <p key={j.id}><b>{status(j.status)}</b><br />{j.error || j.stage || "Processing job"}</p>) : <p>You’re all caught up. Processing updates and submission reminders will appear here.</p>}</div>}</div><span className="top-divider" /><button className="avatar small" aria-label={localNoAuth ? "Workspace settings" : user ? "Account settings" : "Sign in"} onClick={() => user || localNoAuth ? go("Settings") : setAuth(true)}>{user?.name?.[0]?.toUpperCase() || (localNoAuth ? "L" : "Y")}</button></div></header>
 
     <main>
 
-      <div className="page-heading"><div><div className="eyebrow">{section === "Dashboard" ? "YOUR CREATIVE COMMAND CENTER" : "AI CLIP FACTORY"}</div><h1>{section === "Dashboard" ? "Let’s make something worth watching." : section}</h1><p>{({ "Dashboard": "From source video to standout clips. All in one flow.", "Content Rewards": "Campaign rules, creative work, and compliance in one place.", "Create Clips": "Find the strongest moments. Give each one its own edit.", "Video Library": "Your authorized source material, ready for its next story.", "Generated Clips": "Distinctive edits. Platform-ready metadata. Full creative control.", "AI Video Editor": "Fine-tune the details and preserve every version.", "Publishing Queue": "Review, authorize, and publish through official integrations.", "Connected Accounts": "Connect your channels. Keep control of every publication.", "Submissions": "Publication is the beginning. Get your campaign submission ready.", "Earnings & Analytics": "Real performance, transparent costs, and verified payouts.", "Settings": "Configure your workspace and cloud processing services." } as Record<Section, string>)[section]}</p></div><div className="heading-actions">{section === "Dashboard" && <button className="button secondary" onClick={() => newWork(true)}><Plus size={16} />New campaign</button>}{!["Settings", "Connected Accounts", "Earnings & Analytics", "Submissions"].includes(section) && <button className="button primary" onClick={() => newWork(section === "Content Rewards")}><Zap size={16} fill="currentColor" />{section === "Content Rewards" ? "New campaign" : "Generate FAST"}</button>}</div></div>
+      <div className="page-heading"><div><div className="eyebrow">{section === "Dashboard" ? "YOUR CREATIVE COMMAND CENTER" : "AI CLIP FACTORY"}</div><h1>{section === "Dashboard" ? "Let’s make something worth watching." : sectionLabel}</h1><p>{({ "Dashboard": "From source video to standout clips. All in one flow.", "Content Rewards": "Campaign rules, creative work, and compliance in one place.", "Create Clips": freeMode ? "Choose your moment. Render it locally. No API key required." : "Find the strongest moments. Give each one its own edit.", "Video Library": "Your authorized source material, ready for its next story.", "Generated Clips": "Distinctive edits. Platform-ready metadata. Full creative control.", "AI Video Editor": "Fine-tune the details and preserve every version.", "Publishing Queue": "Review, authorize, and publish through official integrations.", "Connected Accounts": "Connect your channels. Keep control of every publication.", "Submissions": "Publication is the beginning. Get your campaign submission ready.", "Earnings & Analytics": "Real performance, transparent costs, and verified payouts.", "Settings": freeMode ? "Local processing is enabled. Paid AI calls are blocked." : "Configure your workspace and cloud processing services." } as Record<Section, string>)[section]}</p></div><div className="heading-actions">{section === "Dashboard" && <button className="button secondary" onClick={() => newWork(true)}><Plus size={16} />New campaign</button>}{!["Settings", "Connected Accounts", "Earnings & Analytics", "Submissions"].includes(section) && <button className="button primary" onClick={() => newWork(section === "Content Rewards")}><Zap size={16} fill="currentColor" />{section === "Content Rewards" ? "New campaign" : freeMode ? "Create clip" : "Generate FAST"}</button>}</div></div>
 
 
 
-      {!user && <div className="notice"><ShieldCheck size={18} /><span><strong>Your workspace is ready to set up.</strong> Create a private account to save campaigns, upload videos, and start processing.</span><button onClick={() => setAuth(true)}>Create workspace<ArrowRight size={15} /></button></div>}
+      {!user && !localNoAuth && <div className="notice"><ShieldCheck size={18} /><span><strong>Your workspace is ready to set up.</strong> Create a private account to save campaigns, upload videos, and start processing.</span><button onClick={() => setAuth(true)}>Create workspace<ArrowRight size={15} /></button></div>}
 
 
 
@@ -186,11 +187,11 @@ export default function Factory() {
 
         <details className="all-metrics"><summary>All workspace metrics<ChevronDown size={13}/></summary><div>{[{label:"Clips generated",value:metrics.clips_generated},{label:"Processing jobs",value:metrics.processing_jobs},{label:"Scheduled videos",value:metrics.scheduled},{label:"Published clips",value:metrics.published},{label:"Pending submissions",value:metrics.pending_submissions},{label:"Approved submissions",value:metrics.approved_submissions},{label:"Rejected submissions",value:metrics.rejected_submissions},{label:"Confirmed earnings",value:money(metrics.confirmed_earnings)},{label:"Actual payouts",value:money(metrics.paid_earnings)},{label:"Processing expenses",value:money(metrics.processing_expenses)}].map(m=><div key={m.label}><span>{m.label}</span><strong>{m.value??0}</strong></div>)}</div></details>
 
-        <section className="creation-banner"><div className="banner-copy"><div className="banner-label"><span className="tiny-dot" />FIRST CLIP FIRST</div><h2>Your best moments.<br /><span>A whole new story.</span></h2><p>Turn an authorized video into distinctive, campaign-ready clips. AI finds the moment. You call the shots.</p><button className="button light" onClick={() => newWork()}><Zap size={16} fill="currentColor" />Create your first clip<ArrowUpRight size={17} /></button><div className="banner-footnote"><ShieldCheck size={12} />Compliance checked before publishing</div></div><div className="flow-art" aria-label="Analyze, edit, and review your clips"><div className="art-glow" /><div className="source-card"><div className="art-card-head"><Video size={13} /><span>YOUR SOURCE</span><span className="tiny-dot" /></div><div className="waveform">{[18,31,23,42,29,55,36,64,44,72,48,36,60,77,51,35,57,43,28,47,24,36,19,30,16].map((h,i) => <span key={i} style={{ height: h }} />)}</div><div className="source-timeline"><span /><span /><span /></div><div className="art-caption">One source. Multiple stories.</div></div><div className="art-connector"><span /><Sparkles size={19} /><span /></div><div className="output-card"><div className="output-preview"><div className="abstract-frame"><span /><span /><span /></div><div className="preview-bars"><span /><span /><span /></div><span className="clip-aspect">9:16</span><div className="art-play"><Play size={16} fill="currentColor" /></div><div className="art-subtitle">THE MOMENT<br /><b>THAT MATTERS.</b></div></div><div className="output-meta"><span className="mini-check"><Check size={10} /></span>Built around your content<Sparkles size={12} /></div></div><div className="floating-pill"><WandSparkles size={14} /><span>Unique Edit DNA</span><span className="pill-spark">✦</span></div></div></section>
+        <section className="creation-banner"><div className="banner-copy"><div className="banner-label"><span className="tiny-dot" />FIRST CLIP FIRST</div><h2>Your best moments.<br /><span>A whole new story.</span></h2><p>{freeMode ? "Choose a moment from your authorized video. Set the crop, add optional subtitles, and render it on your computer." : "Turn an authorized video into distinctive, campaign-ready clips. AI finds the moment. You call the shots."}</p><button className="button light" onClick={() => newWork()}><Zap size={16} fill="currentColor" />Create your first clip<ArrowUpRight size={17} /></button><div className="banner-footnote"><ShieldCheck size={12} />Compliance checked before publishing</div></div><div className="flow-art" aria-label="Analyze, edit, and review your clips"><div className="art-glow" /><div className="source-card"><div className="art-card-head"><Video size={13} /><span>YOUR SOURCE</span><span className="tiny-dot" /></div><div className="waveform">{[18,31,23,42,29,55,36,64,44,72,48,36,60,77,51,35,57,43,28,47,24,36,19,30,16].map((h,i) => <span key={i} style={{ height: h }} />)}</div><div className="source-timeline"><span /><span /><span /></div><div className="art-caption">One source. Multiple stories.</div></div><div className="art-connector"><span /><Sparkles size={19} /><span /></div><div className="output-card"><div className="output-preview"><div className="abstract-frame"><span /><span /><span /></div><div className="preview-bars"><span /><span /><span /></div><span className="clip-aspect">9:16</span><div className="art-play"><Play size={16} fill="currentColor" /></div><div className="art-subtitle">THE MOMENT<br /><b>THAT MATTERS.</b></div></div><div className="output-meta"><span className="mini-check"><Check size={10} /></span>Built around your content<Sparkles size={12} /></div></div><div className="floating-pill"><WandSparkles size={14} /><span>{freeMode ? "Your editing choices" : "Unique Edit DNA"}</span><span className="pill-spark">✦</span></div></div></section>
 
 
 
-        <div className="workflow-strip">{[{ n: "01", title: "Bring your brief", text: "Campaign rules & source video", icon: FileText }, { n: "02", title: "Let AI find the story", text: "Distinctive cuts, captions & metadata", icon: Sparkles }, { n: "03", title: "Review. Publish. Earn.", text: "Compliance & submissions in sync", icon: Send }].map((s,i) => <div key={s.n}><span className="workflow-number">{s.n}</span><s.icon size={19} /><span><strong>{s.title}</strong><small>{s.text}</small></span>{i < 2 && <ChevronRight className="workflow-chevron" size={16} />}</div>)}</div>
+        <div className="workflow-strip">{[{ n: "01", title: "Bring your brief", text: "Campaign rules & source video", icon: FileText }, { n: "02", title: freeMode ? "Choose your moment" : "Let AI find the story", text: freeMode ? "Timing, crop & optional SRT/VTT" : "Distinctive cuts, captions & metadata", icon: Scissors }, { n: "03", title: "Review. Publish. Earn.", text: "Compliance & submissions in sync", icon: Send }].map((s,i) => <div key={s.n}><span className="workflow-number">{s.n}</span><s.icon size={19} /><span><strong>{s.title}</strong><small>{s.text}</small></span>{i < 2 && <ChevronRight className="workflow-chevron" size={16} />}</div>)}</div>
 
 
 
@@ -204,7 +205,7 @@ export default function Factory() {
 
 
 
-      {section === "Create Clips" && <div className="create-page"><section className="panel create-panel"><span className="section-icon"><WandSparkles size={26} /></span><div className="eyebrow">MADE FROM YOUR MOMENTS</div><h2>One source. Something original.</h2><p>Bring a campaign brief and an authorized video. Get a unique editing plan, synchronized subtitles, and metadata for every platform.</p><div className="mode-cards"><button onClick={() => newWork()}><Zap size={23} /><strong>Content Rewards</strong><p>Campaign-aware clips. Compliance first. Your first clip, as soon as it’s ready.</p><span>Generate FAST<ArrowRight size={15} /></span><Badge tone="purple">PRIMARY WORKFLOW</Badge></button><button onClick={() => { if (!user) setAuth(true); else { setCampaignOnly(false); setCreating(true); } }}><Scissors size={23} /><strong>General AI clipping</strong><p>Find standalone moments in your authorized podcasts, interviews, and gameplay.</p><span>Create clips<ArrowRight size={15} /></span></button></div><div className="info-line"><Cloud size={15} />Cloud AI + CPU rendering. Choose FAST or QUALITY in the next step.</div></section><section className="panel"><div className="panel-heading"><h2>Processing queue</h2><Badge>{jobs.length} jobs</Badge></div>{jobs.length ? jobs.map(j => <Job key={j.id} job={j} />) : <Empty icon={Gauge} title="Ready for your first run" text="Progress is saved, and each clip becomes available independently." />}</section></div>}
+      {section === "Create Clips" && <div className="create-page"><section className="panel create-panel"><span className="section-icon"><Scissors size={26} /></span><div className="eyebrow">{freeMode ? "FREE LOCAL PROCESSING" : "MADE FROM YOUR MOMENTS"}</div><h2>Your source. Your moment.</h2><p>{freeMode ? "Pick the source range, choose a crop, and optionally bring an SRT or VTT subtitle file. FFmpeg creates a real vertical MP4 on this computer. No AI subscription or API key is needed." : "Bring a campaign brief and an authorized video. Create an editing plan, synchronized subtitles, and metadata for every platform."}</p><div className="mode-cards"><button onClick={() => newWork()}><FileCheck2 size={23} /><strong>Content Rewards</strong><p>Save the campaign rules, create a clip, and review compliance before publishing.</p><span>{freeMode ? "Create campaign clip" : "Generate FAST"}<ArrowRight size={15} /></span><Badge tone="purple">PRIMARY WORKFLOW</Badge></button><button onClick={() => { if (!user && !localNoAuth) setAuth(true); else { setCampaignOnly(false); setCreating(true); } }}><Scissors size={23} /><strong>{freeMode ? "Local clipping" : "General AI clipping"}</strong><p>{freeMode ? "Manually choose a range from an authorized podcast, interview, or gameplay video." : "Find standalone moments in your authorized source."}</p><span>Create clip<ArrowRight size={15} /></span></button></div><div className="info-line"><ShieldCheck size={15} />{freeMode ? "No paid AI calls. Rendering uses your computer’s CPU." : "Cloud AI + CPU rendering."}</div></section><section className="panel"><div className="panel-heading"><h2>Processing queue</h2><Badge>{jobs.length} jobs</Badge></div>{jobs.length ? jobs.map(j => <Job key={j.id} job={j} />) : <Empty icon={Gauge} title="Ready for your first render" text="Progress is saved, and every completed clip can be previewed and downloaded." />}</section></div>}
 
 
 
@@ -216,7 +217,7 @@ export default function Factory() {
 
 
 
-      {["Generated Clips", "AI Video Editor"].includes(section) && (rows.length ? <div className="clip-grid">{rows.map(c => <ClipCard key={c.id} clip={c} onClick={() => void openClip(c)} />)}</div> : <section className="panel"><Empty icon={section === "AI Video Editor" ? Scissors : Film} title={section === "AI Video Editor" ? "Your edits, down to the frame" : "Your first clip belongs here"} text="Generate a clip from an authorized source, then preview, adjust its timing, review compliance, and download the real MP4." action={<button className="button primary" onClick={() => newWork()}><Zap size={15} />Generate a clip</button>} /></section>)}
+      {["Generated Clips", "AI Video Editor"].includes(section) && (rows.length ? <div className="clip-grid">{rows.map(c => <ClipCard key={c.id} clip={c} onClick={() => void openClip(c)} />)}</div> : <section className="panel"><Empty icon={section === "AI Video Editor" ? Scissors : Film} title={section === "AI Video Editor" ? "Your edits, down to the frame" : "Your first clip belongs here"} text="Create a clip from an authorized source, then preview, adjust its timing, review compliance, and download the real MP4." action={<button className="button primary" onClick={() => newWork()}><Scissors size={15} />Create a clip</button>} /></section>)}
 
 
 
@@ -224,7 +225,7 @@ export default function Factory() {
 
 
 
-      {section === "Connected Accounts" && <div className="accounts-grid">{[{name:"YouTube",key:"youtube",text:"Connect your channel with Google OAuth. Upload approved Shorts through the official YouTube Data API.",label:"Connect YouTube"},{name:"TikTok",key:"tiktok",text:"Manual upload package available. Direct publishing requires an approved Content Posting API integration.",label:"View manual workflow"},{name:"Instagram",key:"instagram",text:"Manual upload package available. Direct publishing requires an eligible account and configured Meta app.",label:"View manual workflow"}].map(p => {const account = rows.find(r => r.platform === p.key && r.status === "connected"); return <section className="panel account-card" key={p.key}><Platform name={p.key} /><h2>{p.name}</h2><Badge tone={account ? "mint" : "neutral"}>{account ? "Connected" : p.key === "youtube" ? "Not connected" : "Manual workflow"}</Badge><p>{p.text}</p><button className="button secondary" onClick={async () => { if (!user) return setAuth(true); if (p.key !== "youtube") { go("Generated Clips"); notify("Open a clip and download its manual publishing package, including MP4 and platform metadata."); return; } try { const result = await api("/accounts/youtube/connect", {method:"POST"}); window.location.href = result.url; } catch(e) { notify((e as Error).message); } }}><Link2 size={15} />{account ? "Reconnect channel" : p.label}<ArrowUpRight size={14} /></button></section>; })}</div>}
+      {section === "Connected Accounts" && <div className="accounts-grid">{[{name:"YouTube",key:"youtube",text:"Connect your channel with Google OAuth. Upload approved Shorts through the official YouTube Data API.",label:"Connect YouTube"},{name:"TikTok",key:"tiktok",text:"Manual upload package available. Direct publishing requires an approved Content Posting API integration.",label:"View manual workflow"},{name:"Instagram",key:"instagram",text:"Manual upload package available. Direct publishing requires an eligible account and configured Meta app.",label:"View manual workflow"}].map(p => {const account = rows.find(r => r.platform === p.key && r.status === "connected"); return <section className="panel account-card" key={p.key}><Platform name={p.key} /><h2>{p.name}</h2><Badge tone={account ? "mint" : "neutral"}>{freeMode ? "Manual workflow" : account ? "Connected" : p.key === "youtube" ? "Not connected" : "Manual workflow"}</Badge><p>{freeMode?"Download your MP4 and metadata package, upload through your own account, then record the public URL and actual publication time here.":p.text}</p><button className="button secondary" onClick={async () => { if (!user && !localNoAuth) return setAuth(true); if (freeMode || p.key !== "youtube") { go("Generated Clips"); notify("Open a clip and download its manual publishing package, including MP4 and platform metadata."); return; } try { const result = await api("/accounts/youtube/connect", {method:"POST"}); window.location.href = result.url; } catch(e) { notify((e as Error).message); } }}><Link2 size={15} />{freeMode ? "View manual workflow" : account ? "Reconnect channel" : p.label}<ArrowUpRight size={14} /></button></section>; })}</div>}
 
 
 
@@ -236,23 +237,23 @@ export default function Factory() {
 
 
 
-      {section === "Settings" && <div className="settings-layout"><section className="panel"><div className="panel-heading"><div><h2>Cloud services</h2><p>Credentials are configured through server environment variables.</p></div><Cloud size={20} /></div>{[{name:"Hosted AI provider",value:aiReady,detail:"Campaign analysis, transcription, editing plans, and metadata",env:"OPENAI_API_KEY"},{name:"FFmpeg rendering",value:config.ffmpeg === true || config.ffmpeg?.configured,detail:"CPU-based vertical video rendering. No local AI hardware.",env:"FFMPEG_BINARY"},{name:"Object storage",value:config.storage === "s3" || config.storage?.provider === "s3",detail:"Local storage for development; S3-compatible storage for cloud deployment",env:"S3_BUCKET"},{name:"YouTube integration",value:config.youtube === true || config.youtube?.configured,detail:"Official OAuth and authorized uploads",env:"YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET"}].map(s => <div className="service-row" key={s.name}><span className={`service-dot ${s.value ? "ready" : ""}`} /><div><strong>{s.name}</strong><p>{s.detail}</p><code>{s.env}</code></div><Badge tone={s.value ? "mint" : "amber"}>{s.value ? "Configured" : "Setup needed"}</Badge></div>)}<div className="notice muted settings-note"><FileText size={17} /><span>See README.md and .env.example in the project for setup. API keys stay on the server.</span></div></section><div><section className="panel"><div className="panel-heading"><h2>Workspace</h2><SlidersHorizontal size={17} /></div><div className="settings-details"><label>Account<span>{user?.email || "Not signed in"}</span></label><label>Generation mode<span>FAST by default</span></label><label>Monthly budget<span>{money(config.preferences?.monthly_spend_limit_usd ?? config.monthly_spend_limit_usd)}</span></label><label>Maximum job cost<span>{money(config.preferences?.max_job_cost_usd ?? config.max_job_cost_usd)}</span></label><label>Storage retention<span>{config.retention_days ? `${config.retention_days} days` : "See server configuration"}</span></label><p>Spending reservations are enforced by the backend. Configure storage lifecycle rules for retention; see the deployment guide.</p>{user&&<BudgetControls config={config} onSaved={refresh} notify={notify}/>} {user ? <button className="button secondary" onClick={async () => { await api("/auth/logout", {method:"POST"}); setUser(null); setData({metrics:{}}); notify("Signed out of your workspace."); }}><LogOut size={15} />Sign out</button> : <button className="button primary" onClick={() => setAuth(true)}>Create workspace<ArrowRight size={15} /></button>}</div></section><div className="rights-card"><ShieldCheck size={22} /><h3>Your sources. Your rights.</h3><p>Public links aren’t permission to reuse a video. Each upload records your authorization.</p></div></div></div>}
+      {section === "Settings" && <WorkspaceSettings localNoAuth={localNoAuth} config={config} freeMode={freeMode} aiReady={aiReady} user={user} refresh={refresh} notify={notify} signIn={()=>setAuth(true)} signOut={async()=>{await api("/auth/logout",{method:"POST"});setUser(null);setData({metrics:{}});notify("Signed out of your workspace.");}}/>}
 
-      <footer className="footer"><span><span className="tiny-dot" />Creative control. At cloud speed.</span><span>AI Clip Factory<span className="footer-version">v0.1</span></span></footer>
+      <footer className="footer"><span><span className="tiny-dot" />Creative control. Your computer.</span><span>AI Clip Factory<span className="footer-version">v0.1</span></span></footer>
 
     </main></div>
 
     {toast && <div className="toast" role="status"><Activity size={17} /><span>{toast}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast("")}><X size={16} /></button></div>}
 
-    {auth && <Modal title={register ? "Create your workspace" : "Welcome back"} subtitle="A private space for your next great clip." close={() => setAuth(false)}><AuthForm register={register} setRegister={setRegister} onSuccess={() => {setAuth(false); refresh();}} /></Modal>}
+    {auth && !localNoAuth && <Modal title={register ? "Create your workspace" : "Welcome back"} subtitle="A private space for your next great clip." close={() => setAuth(false)}><AuthForm register={register} setRegister={setRegister} onSuccess={() => {setAuth(false); refresh();}} /></Modal>}
 
-    {creating && <Modal wide title={campaignOnly ? "New Content Rewards campaign" : "Create something worth watching"} subtitle={campaignOnly ? "Bring the brief. Keep the evidence. Review the rules." : "Your brief + your source → a distinctive clip."} close={() => setCreating(false)}><CreateFlow campaignOnly={campaignOnly} campaigns={campaigns} sources={sources} aiReady={aiReady} onDone={(message) => {setCreating(false); notify(message); refresh(); go(campaignOnly ? "Content Rewards" : "Create Clips");}} /></Modal>}
+    {creating && <Modal wide title={campaignOnly ? "New Content Rewards campaign" : "Create something worth watching"} subtitle={campaignOnly ? "Bring the brief. Keep the evidence. Review the rules." : "Your source + your choices → a local render."} close={() => setCreating(false)}><CreateFlow campaignOnly={campaignOnly} campaigns={campaigns} sources={sources} aiReady={aiReady} freeMode={freeMode} onDone={(message) => {setCreating(false); notify(message); refresh(); go(campaignOnly ? "Content Rewards" : "Create Clips");}} /></Modal>}
 
-    {selected && section === "Content Rewards" && <Modal wide title={selected.name} subtitle="Campaign rules and source evidence" close={() => setSelected(null)}><CampaignDetails campaign={selected} onUpdate={(c) => {setSelected(c); refresh(); loadSection();}} notify={notify} /></Modal>}
+    {selected && section === "Content Rewards" && <Modal wide title={selected.name} subtitle="Campaign rules and source evidence" close={() => setSelected(null)}><CampaignDetails freeMode={freeMode} campaign={selected} onUpdate={(c) => {setSelected(c); refresh(); loadSection();}} notify={notify} /></Modal>}
 
-    {selected && ["Generated Clips", "AI Video Editor"].includes(section) && <Modal wide title={selected.title || selected.metadata?.youtube?.[0]?.title || "Your generated clip"} subtitle="Preview, compliance, metadata, and editing controls" close={() => setSelected(null)}><ClipDetails clip={selected} editing={section === "AI Video Editor"} onUpdate={() => {loadSection(); refresh(); if(selected) void openClip(selected);}} notify={notify} /></Modal>}
+    {selected && ["Generated Clips", "AI Video Editor"].includes(section) && <Modal wide title={selected.title || selected.metadata?.youtube?.[0]?.title || "Your generated clip"} subtitle="Preview, compliance, metadata, and editing controls" close={() => setSelected(null)}><ClipDetails freeMode={freeMode} clip={selected} editing={section === "AI Video Editor"} onUpdate={() => {loadSection(); refresh(); if(selected) void openClip(selected);}} notify={notify} /></Modal>}
 
-    {help && <Modal title="From brief to first clip" subtitle="Everything you need to start creating." close={() => setHelp(false)}><div className="help-content"><ol><li>Create your workspace account.</li><li>Configure a hosted AI API key in the server’s .env file, then restart the API and worker.</li><li>Add a campaign brief and review extracted rules with evidence.</li><li>Upload a video you are authorized to use, then choose Generate FAST.</li><li>Preview the clip, review compliance, and download your MP4 and metadata.</li><li>Connect YouTube when OAuth credentials are configured, or publish manually and record the post URL.</li></ol><p>Read the project README for startup commands, cloud deployment, and service configuration. No campaign submissions or publications happen without your authorization.</p></div></Modal>}
+    {help && <Modal title="From source to first clip" subtitle="A workflow you control." close={() => setHelp(false)}><div className="help-content"><ol><li>{localNoAuth ? "Open the app and start creating. This local workspace has no login or account setup." : "Create your workspace account."}</li><li>Add a campaign brief and review the supplied requirements. Local extraction is a helper, not an AI compliance decision.</li><li>Upload a video you are authorized to use, then choose your clip’s start and end times.</li><li>Optionally upload an SRT or VTT file with subtitle timestamps. Without a subtitle file, the clip is rendered without speech captions.</li><li>Write or edit the title and description, choose the crop, and select Render clip.</li><li>Preview the MP4, review compliance, and download the manual upload package. Record the actual public post URL after publishing.</li></ol><p>{freeMode ? "Free local mode uses FFmpeg on your computer. Paid AI requests are blocked, and automatic transcription or AI moment selection is unavailable. Keep the app open while rendering." : "Hosted processing is available only when explicitly configured. Review the README for configuration."}</p></div></Modal>}
 
   </div>;
 
@@ -280,7 +281,9 @@ function AuthForm({register,setRegister,onSuccess}:{register:boolean;setRegister
 
 
 
-function CreateFlow({campaignOnly,campaigns,sources,aiReady,onDone}:{campaignOnly:boolean;campaigns:Row[];sources:Row[];aiReady:boolean;onDone:(message:string)=>void}) {
+function CreateFlow(props:{campaignOnly:boolean;campaigns:Row[];sources:Row[];aiReady:boolean;freeMode:boolean;onDone:(message:string)=>void}) { return props.freeMode ? <LocalCreateFlow {...props}/> : <HostedCreateFlow {...props}/>; }
+
+function HostedCreateFlow({campaignOnly,campaigns,sources,aiReady,onDone}:{campaignOnly:boolean;campaigns:Row[];sources:Row[];aiReady:boolean;onDone:(message:string)=>void}) {
 
   const [mode,setMode]=useState("fast");const [campaignId,setCampaignId]=useState("");const [general,setGeneral]=useState(false);const [file,setFile]=useState<File|null>(null);const [sourceId,setSourceId]=useState("");const [attachment,setAttachment]=useState<File|null>(null);const [rights,setRights]=useState(false);const [busy,setBusy]=useState(false);const [stage,setStage]=useState("");const [error,setError]=useState("");const [drag,setDrag]=useState(false);
 
@@ -318,7 +321,7 @@ function CreateFlow({campaignOnly,campaigns,sources,aiReady,onDone}:{campaignOnl
 
 
 
-function CampaignDetails({campaign,onUpdate,notify}:{campaign:Row;onUpdate:(c:Row)=>void;notify:(s:string)=>void}) {
+function CampaignDetails({campaign,onUpdate,notify,freeMode}:{campaign:Row;onUpdate:(c:Row)=>void;notify:(s:string)=>void;freeMode:boolean}) {
 
   const [rules,setRules]=useState(JSON.stringify(campaign.rules||{},null,2));const [note,setNote]=useState("");const [busy,setBusy]=useState(false);
 
@@ -326,17 +329,18 @@ function CampaignDetails({campaign,onUpdate,notify}:{campaign:Row;onUpdate:(c:Ro
 
   return <div className="form-body"><div className="detail-summary"><Badge tone={campaign.review_required?"amber":"mint"}>{campaign.review_required?"Rules need review":"Rules extracted"}</Badge>{campaign.url&&<a href={campaign.url} target="_blank" rel="noreferrer" className="text-button">Original campaign<ExternalLink size={14}/></a>}</div>
 
-    {campaign.analysis_error&&<div className="notice warning"><CircleHelp size={17}/><span>{campaign.analysis_error}</span></div>}
+    {campaign.analysis_error&&<div className="notice warning"><CircleHelp size={17}/><span>{freeMode && /OPENAI_API_KEY|Cloud AI|hosted AI/i.test(campaign.analysis_error) ? "This brief was saved before free local mode. Extract supplied rules or review them below; no API key is needed." : campaign.analysis_error}</span></div>}
 
     <label>Original brief<div className="brief-text">{campaign.brief}</div></label>
 
-    <label>Campaign rules <span className="optional">editable JSON</span><textarea className="code-input" rows={14} value={rules} onChange={e=>setRules(e.target.value)}/><small>Keep unknown requirements null. Resolve uncertainties only after reviewing the source.</small></label>
+    {freeMode&&<ManualRuleFields value={rules} onChange={setRules}/>}
+    <label>Campaign rules <span className="optional">advanced JSON</span><textarea className="code-input" rows={14} value={rules} onChange={e=>setRules(e.target.value)}/><small>Keep unknown requirements null. Resolve uncertainties only after reviewing the source.</small></label>
 
-    <div className="evidence-box"><h3><FileText size={16}/>Source evidence & uncertainty</h3><pre>{JSON.stringify(campaign.evidence?.length?campaign.evidence:campaign.rules?.evidence||"No AI extraction yet. Configure a hosted AI provider to analyze this brief.",null,2)}</pre></div>
+    <div className="evidence-box"><h3><FileText size={16}/>Source evidence & uncertainty</h3><pre>{JSON.stringify(campaign.evidence?.length?campaign.evidence:campaign.rules?.evidence||(freeMode?"Review the supplied brief and record the requirements you can verify.":"No extraction evidence is available yet."),null,2)}</pre></div>
 
     <label>Review evidence<input value={note} onChange={e=>setNote(e.target.value)} placeholder="Describe the source you checked and any rule corrections" minLength={8}/></label>
 
-    <div className="button-row"><button className="button secondary" disabled={busy} onClick={async()=>{setBusy(true);try{const c=await api(`/campaigns/${campaign.id}/analyze`,{method:"POST"});onUpdate(c);notify(c.analysis_error||"Campaign analysis complete. Review the evidence and uncertain rules.");}catch(e){notify((e as Error).message);}finally{setBusy(false);}}}>{busy?<LoaderCircle className="spin" size={15}/>:<Sparkles size={15}/>}Analyze brief</button>
+    <div className="button-row"><button className="button secondary" disabled={busy} onClick={async()=>{setBusy(true);try{const c=await api(`/campaigns/${campaign.id}/analyze`,{method:"POST"});onUpdate(c);notify(c.analysis_error||(freeMode?"Local rule extraction complete. Verify every requirement against the source.":"Campaign analysis complete. Review the evidence and uncertain rules."));}catch(e){notify((e as Error).message);}finally{setBusy(false);}}}>{busy?<LoaderCircle className="spin" size={15}/>:<Sparkles size={15}/>}{freeMode?"Extract supplied rules":"Analyze brief"}</button>
 
     <button className="button primary" disabled={busy||note.trim().length<8} onClick={async()=>{setBusy(true);try{const parsed=JSON.parse(rules);if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw new Error("Rules must be a JSON object.");const c=await api(`/campaigns/${campaign.id}/rules`,{method:"PATCH",body:JSON.stringify({rules:parsed,note})});onUpdate(c);notify("Reviewed campaign rules saved with your evidence note.");}catch(e){notify((e as Error).message);}finally{setBusy(false);}}}><Check size={15}/>Save reviewed rules</button></div>
 
@@ -348,7 +352,7 @@ function CampaignDetails({campaign,onUpdate,notify}:{campaign:Row;onUpdate:(c:Ro
 
 
 
-function ClipDetails({clip,editing,onUpdate,notify}:{clip:Row;editing:boolean;onUpdate:()=>void;notify:(s:string)=>void}) {
+function ClipDetails({clip,editing,onUpdate,notify,freeMode}:{clip:Row;editing:boolean;onUpdate:()=>void;notify:(s:string)=>void;freeMode:boolean}) {
 
   const [platform,setPlatform]=useState("youtube");const [tab,setTab]=useState(editing?"edit":"metadata");const [busy,setBusy]=useState(false);const [variant,setVariant]=useState(0);
 
@@ -356,7 +360,7 @@ function ClipDetails({clip,editing,onUpdate,notify}:{clip:Row;editing:boolean;on
 
   useEffect(()=>setVariant(metadata[platform]?.recommended_index||0),[platform,clip.id]);
 
-  async function regenerateMetadata(){setBusy(true);try{await api(`/clips/${clip.id}/regenerate-metadata`,{method:"POST"});notify("Metadata regenerated and compliance checked.");onUpdate();}catch(e){notify((e as Error).message);}finally{setBusy(false);}}
+  async function regenerateMetadata(){if(freeMode){notify("Edit the metadata fields directly. Paid AI optimization is disabled in free local mode.");return;}setBusy(true);try{await api(`/clips/${clip.id}/regenerate-metadata`,{method:"POST"});notify("Metadata regenerated and compliance checked.");onUpdate();}catch(e){notify((e as Error).message);}finally{setBusy(false);}}
 
   async function regenerate(e:FormEvent<HTMLFormElement>){e.preventDefault();setBusy(true);const f=new FormData(e.currentTarget);try{
 
@@ -378,17 +382,17 @@ function ClipDetails({clip,editing,onUpdate,notify}:{clip:Row;editing:boolean;on
 
   }catch(e){notify((e as Error).message);}finally{setBusy(false);}}
 
-  return <div className="clip-detail"><div className="clip-preview">{clip.preview_url?<video src={`${clip.preview_url}?v=${clip.current_version}`} controls playsInline preload="metadata"/>:<Empty title="Preview unavailable" text="A successful render is needed before a clip can be previewed."/>}<div className="button-row"><a className="button primary" href={clip.download_url||`/api/clips/${clip.id}/download`} download><ArrowDownToLine size={15}/>Download MP4</a><a className="button secondary" href={`/api/clips/${clip.id}/package`} download><FileText size={15}/>Upload package</a></div><div className="clip-version-label"><Film size={12}/>{clip.media_info?.width} × {clip.media_info?.height} · {Number(clip.media_info?.duration||0).toFixed(1)}s · v{clip.current_version||1}</div></div>
+  return <div className="clip-detail"><div className="clip-preview">{clip.preview_url?<video src={clip.preview_url.startsWith("blob:")?clip.preview_url:`${clip.preview_url}?v=${clip.current_version}`} controls playsInline preload="metadata"/>:<Empty title="Preview unavailable" text="A successful render is needed before a clip can be previewed."/>}<div className="button-row"><a className="button primary" href={clip.download_url||`/api/clips/${clip.id}/download`} download={`clip-${clip.id}.mp4`}><ArrowDownToLine size={15}/>Download MP4</a><button className="button secondary" onClick={()=>downloadArtifact(`/clips/${clip.id}/package`).catch((e:Error)=>notify(e.message))}><FileText size={15}/>Upload package</button></div><div className="clip-version-label"><Film size={12}/>{clip.media_info?.width} × {clip.media_info?.height} · {Number(clip.media_info?.duration||0).toFixed(1)}s · v{clip.current_version||1}</div></div>
 
     <div className="clip-inspector"><div className="segmented tabs">{["metadata","compliance","edit","publish"].map(t=><button key={t} className={tab===t?"selected":""} onClick={()=>setTab(t)}>{t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
     {tab==="metadata"&&<div className="form-body compact-form"><div className="platform-selector">{["youtube","tiktok","instagram"].map(p=><button key={p} className={platform===p?"selected":""} onClick={()=>setPlatform(p)}><Platform name={p}/>{p==="youtube"?"Shorts":p==="tiktok"?"TikTok":"Reels"}</button>)}</div>
 
-    {options.length>1&&<label>Creative alternative<select value={variant} onChange={e=>setVariant(Number(e.target.value))}>{options.map((_:Row,i:number)=><option value={i} key={i}>Option {i+1}{i===platformData.recommended_index?" · Recommended":""}</option>)}</select></label>}
+    {options.length>1&&<label>{freeMode?"Metadata version":"Creative alternative"}<select value={variant} onChange={e=>setVariant(Number(e.target.value))}>{options.map((_:Row,i:number)=><option value={i} key={i}>Option {i+1}{i===platformData.recommended_index?(freeMode?" · Selected":" · Recommended"):""}</option>)}</select></label>}
 
-    {Object.keys(option).length?<MetadataEditor key={`${clip.id}-${clip.current_version}-${platform}-${variant}`} clip={clip} platform={platform} variant={variant} option={option} onUpdate={onUpdate} notify={notify}/>:<p>No metadata available for this platform.</p>}
+    {Object.keys(option).length?<MetadataEditor key={`${clip.id}-${clip.current_version}-${platform}-${variant}`} clip={clip} freeMode={freeMode} platform={platform} variant={variant} option={option} onUpdate={onUpdate} notify={notify}/>:<p>No metadata available for this platform.</p>}
 
-    <button className="button secondary" disabled={busy} onClick={regenerateMetadata}>{busy?<LoaderCircle className="spin" size={14}/>:<WandSparkles size={14}/>}Optimize titles, captions & hashtags</button></div>}
+    {freeMode?<div className="info-line"><ShieldCheck size={14}/>Metadata is editable above. Paid AI optimization is disabled.</div>:<button className="button secondary" disabled={busy} onClick={regenerateMetadata}>{busy?<LoaderCircle className="spin" size={14}/>:<WandSparkles size={14}/>}Optimize titles, captions & hashtags</button>}</div>}
 
     {tab==="compliance"&&<div className="form-body"><Badge tone={clip.compliance?.status==="PASS"?"mint":"amber"}>{status(clip.compliance?.status||"review required")}</Badge>{(clip.compliance?.checks||[]).map((check:Row,i:number)=><div className="compliance-check" key={i}><ShieldCheck size={16}/><div><strong>{status(check.rule||check.name)}</strong><p>{check.detail||check.message||check.reason}</p></div><Badge tone={check.status==="PASS"?"mint":check.status==="FAIL"?"red":"amber"}>{status(check.status)}</Badge></div>)}
 
@@ -402,7 +406,7 @@ function ClipDetails({clip,editing,onUpdate,notify}:{clip:Row;editing:boolean;on
 
     <div className="generation-settings"><label>Horizontal crop (0–1)<input type="number" name="crop_x" min="0" max="1" step="0.05" defaultValue={plan.scenes?.[0]?.crop_x??0.5} required/></label><label>Vertical crop (0–1)<input type="number" name="crop_y" min="0" max="1" step="0.05" defaultValue={plan.scenes?.[0]?.crop_y??0.5} required/></label></div><label>Zoom (1–1.5×)<input type="number" name="zoom" min="1" max="1.5" step="0.05" defaultValue={plan.scenes?.[0]?.zoom??1} required/></label>
 
-    <label>Opening hook<input name="hook" defaultValue={plan.hook||""} maxLength={140}/></label><label className="checkbox-label"><input type="checkbox" name="show_hook" defaultChecked={plan.show_hook}/><span>Show the hook for the opening 2.5 seconds</span></label><label className="checkbox-label"><input type="checkbox" name="optimize_metadata"/><span>Regenerate metadata for this version</span></label><p className="info-line"><Film size={15}/>Timing and crop changes create a new render and repeat compliance checks.</p><button className="button primary" disabled={busy}>{busy?<LoaderCircle className="spin" size={15}/>:<RefreshCw size={15}/>}Regenerate video</button><details className="version-history"><summary>Editing versions ({clip.versions?.length||1})</summary>{(clip.versions||[]).map((v:Row)=><p key={v.id}>Version {v.version} · {date(v.created_at)}</p>)}</details></form>}
+    <label>Opening hook<input name="hook" defaultValue={plan.hook||""} maxLength={140}/></label><label className="checkbox-label"><input type="checkbox" name="show_hook" defaultChecked={plan.show_hook}/><span>Show the hook for the opening 2.5 seconds</span></label>{!freeMode&&<label className="checkbox-label"><input type="checkbox" name="optimize_metadata"/><span>Regenerate metadata for this version</span></label>}<p className="info-line"><Film size={15}/>Timing and crop changes create a new render and repeat compliance checks.</p><button className="button primary" disabled={busy}>{busy?<LoaderCircle className="spin" size={15}/>:<RefreshCw size={15}/>}Regenerate video</button><details className="version-history"><summary>Editing versions ({clip.versions?.length||1})</summary>{(clip.versions||[]).map((v:Row)=><p key={v.id}>Version {v.version} · {date(v.created_at)}</p>)}</details></form>}
 
     {tab==="publish"&&<PublishingForm clip={clip} notify={notify} onUpdate={onUpdate}/>}</div></div>;
 
@@ -410,7 +414,7 @@ function ClipDetails({clip,editing,onUpdate,notify}:{clip:Row;editing:boolean;on
 
 
 
-function MetadataEditor({clip,platform,variant,option,onUpdate,notify}:{clip:Row;platform:string;variant:number;option:Row;onUpdate:()=>void;notify:(s:string)=>void}) {
+function MetadataEditor({clip,platform,variant,option,onUpdate,notify,freeMode}:{clip:Row;platform:string;variant:number;option:Row;onUpdate:()=>void;notify:(s:string)=>void;freeMode:boolean}) {
 
   const [busy,setBusy]=useState(false);
 
@@ -418,9 +422,9 @@ function MetadataEditor({clip,platform,variant,option,onUpdate,notify}:{clip:Row
 
     {[{key:"title",label:"Title",max:100},{key:"caption",label:"Caption",max:2200},{key:"description",label:"Description",max:5000},{key:"opening_hook",label:"Opening hook",max:250},{key:"hashtags",label:"Hashtags",max:2000}].map(field=><label key={field.key}>{field.label}<textarea name={field.key} rows={field.key==="description"?4:2} defaultValue={Array.isArray(option[field.key])?option[field.key].join(" "):option[field.key]||""} maxLength={field.max} required={field.key==="title"}/></label>)}
 
-    {option.reasoning&&<p className="metadata-reasoning">{option.reasoning}<br/>Heuristic score: {option.score}/100</p>}
+    {option.reasoning&&<p className="metadata-reasoning">{option.reasoning}<br/>{freeMode?"User-supplied metadata · no AI score":"Heuristic score: "+option.score+"/100"}</p>}
 
-    <div className="button-row"><button className="button secondary" type="button" onClick={async()=>{await navigator.clipboard.writeText([option.title,option.description,option.caption,(option.hashtags||[]).join(" ")].filter(Boolean).join("\n\n"));notify("Platform metadata copied.");}}><Copy size={13}/>Copy metadata</button><button className="button primary" disabled={busy}><Check size={13}/>Save & recommend</button></div></form>;
+    <div className="button-row"><button className="button secondary" type="button" onClick={async()=>{await navigator.clipboard.writeText([option.title,option.description,option.caption,(option.hashtags||[]).join(" ")].filter(Boolean).join("\n\n"));notify("Platform metadata copied.");}}><Copy size={13}/>Copy metadata</button><button className="button primary" disabled={busy}><Check size={13}/>{freeMode?"Save metadata":"Save & recommend"}</button></div></form>;
 
 }
 
