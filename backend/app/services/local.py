@@ -230,6 +230,20 @@ class LocalPipelineService(PipelineService):
         for source in sources:
             for raw_line in source["text"].splitlines():
                 line = raw_line.strip()
+                for label, field in [("Automated clipping", "automated_clipping_allowed"), ("AI generated videos", "ai_generated_allowed"), ("Music", "music_allowed"), ("AI voice", "ai_voice_allowed"), ("Paid promotion", "paid_promotion_allowed")]:
+                    restriction = re.fullmatch(re.escape(label) + r"\s*:\s*(allowed|permitted|yes|prohibited|not allowed|no)\.?", line, re.IGNORECASE)
+                    if restriction:
+                        set_field(field, restriction[1].casefold() in {"allowed", "permitted", "yes"}, source["source"], line)
+                original = re.fullmatch(r"original (?:creator )?footage\s*:\s*(required|yes|not required|no)\.?", line, re.IGNORECASE)
+                if original:
+                    set_field("original_footage_required", original[1].casefold() in {"required", "yes"}, source["source"], line)
+                if re.fullmatch(r"no automated clipping[.!]?", line, re.IGNORECASE):
+                    set_field("automated_clipping_allowed", False, source["source"], line)
+                if re.fullmatch(r"no (?:fully )?AI[- ]generated videos[.!]?", line, re.IGNORECASE):
+                    set_field("ai_generated_allowed", False, source["source"], line)
+                required_link = re.fullmatch(r"required links?\s*:\s*(.+)", line, re.IGNORECASE)
+                if required_link:
+                    set_field("required_links", required_link[1].split(), source["source"], line)
                 match = re.fullmatch(r"(?:allowed\s+|permitted\s+)?platforms?\s*:\s*(.+)", line, re.IGNORECASE)
                 if match:
                     values = re.split(r"\s*[,;/|]\s*", match[1].strip().rstrip("."))
@@ -257,6 +271,7 @@ class LocalPipelineService(PipelineService):
         if data["min_duration"] is not None and data["max_duration"] is not None and data["min_duration"] > data["max_duration"]:
             data["contradictions"].append("Minimum duration exceeds maximum duration.")
         data["evidence"] = evidence
+        data = CampaignRules.model_validate(data).model_dump()
         return {"rules": data, "evidence": evidence, "review_required": True, "source_url": source_url,
                 "usage": [], "analysis_method": "local_labeled_text", "ai_used": False}
 
@@ -276,7 +291,7 @@ class LocalPipelineService(PipelineService):
         title = (manual.title if manual and manual.title else clip.title)[:100]
         description = manual.description if manual and manual.description else clip.transcript_excerpt
         tags = list(dict.fromkeys((manual.hashtags if manual else []) + campaign.required_hashtags))
-        required = campaign.required_mentions + campaign.required_disclosures
+        required = campaign.required_mentions + campaign.required_disclosures + campaign.required_links
         text = description.strip()
         for value in required:
             if not re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", text, re.IGNORECASE):

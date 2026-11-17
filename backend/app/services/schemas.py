@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -33,6 +34,15 @@ class CampaignRules(Model):
     permitted_source_material: list[str] = Field(default_factory=list)
     prohibited_content: list[str] = Field(default_factory=list)
     audio_restrictions: list[str] = Field(default_factory=list)
+    required_links: list[str] = Field(default_factory=list)
+    prohibited_footage: list[str] = Field(default_factory=list)
+    audience_restrictions: list[str] = Field(default_factory=list)
+    automated_clipping_allowed: bool | None = None
+    ai_generated_allowed: bool | None = None
+    music_allowed: bool | None = None
+    ai_voice_allowed: bool | None = None
+    original_footage_required: bool | None = None
+    paid_promotion_allowed: bool | None = None
     minimum_views: int | None = Field(default=None, ge=0)
     reward_per_1000: float | None = Field(default=None, ge=0)
     flat_fee: float | None = Field(default=None, ge=0)
@@ -46,6 +56,14 @@ class CampaignRules(Model):
     evidence: list[Evidence] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def promotional_links(self):
+        for value in self.required_links:
+            parsed = urlparse(value)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("Required links must use HTTPS without credentials")
+        return self
 
 
 class Word(Model):

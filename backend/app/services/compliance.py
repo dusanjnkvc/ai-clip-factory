@@ -61,7 +61,7 @@ def check_compliance(
             # Require a whole token: #ad must not be satisfied by #advertisement.
             if not re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", text, re.IGNORECASE):
                 missing.append(value)
-        for value in campaign.required_disclosures:
+        for value in campaign.required_disclosures + campaign.required_links:
             if value.casefold() not in text.casefold():
                 missing.append(value)
         add(f"metadata_{platform}", "FAIL" if missing else "PASS", "Missing required campaign text: " + ", ".join(missing) if missing else "The recommended metadata includes all supplied required tags, mentions, and disclosure text.")
@@ -74,6 +74,19 @@ def check_compliance(
         semantic("audio_restrictions", "Review music/audio rights and restrictions: " + "; ".join(campaign.audio_restrictions))
     if campaign.permitted_source_material:
         semantic("source_material", "Confirm this source matches campaign-permitted material: " + "; ".join(campaign.permitted_source_material))
+    if campaign.automated_clipping_allowed is False or campaign.ai_generated_allowed is False:
+        semantic("manual_editing", "The campaign restricts automation. An automatically generated clip does not establish eligibility.")
+    if campaign.original_footage_required:
+        semantic("original_footage", "Confirm that required original creator footage and ownership evidence are present in the actual video.")
+    if campaign.music_allowed is False:
+        semantic("music_restrictions", "Verify that the retained source audio contains no prohibited music.")
+    if campaign.ai_voice_allowed is False:
+        semantic("ai_voice_restrictions", "No synthetic voice is added by this workflow. Verify the original source audio also meets the rule.")
+    if campaign.paid_promotion_allowed is False:
+        semantic("paid_promotion", "Review the proposed use, promotion and disclosures against the original terms.")
+    for field in ("prohibited_footage", "audience_restrictions"):
+        if getattr(campaign, field):
+            semantic(field, "Review the actual video against: " + "; ".join(getattr(campaign, field)))
     if any(re.search(r"on.?screen|spoken|verbal|audio", text, re.IGNORECASE) for text in campaign.required_disclosures):
         semantic("disclosures", "The campaign requires a disclosure delivery method that cannot be verified by metadata text alone.")
     if campaign.draft_approval_required is True:

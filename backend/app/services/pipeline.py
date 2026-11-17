@@ -216,7 +216,7 @@ class PipelineService:
         data = result.model_dump()
         # Automatically correct objectively fixable required text omissions in all variants.
         required_tags = list(dict.fromkeys(campaign.required_hashtags))
-        required_text = campaign.required_mentions + campaign.required_disclosures
+        required_text = campaign.required_mentions + campaign.required_disclosures + campaign.required_links
         for platform in data.values():
             for variant in platform["variants"]:
                 variant["hashtags"] = list(dict.fromkeys(variant["hashtags"] + required_tags))

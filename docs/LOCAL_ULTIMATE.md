@@ -31,3 +31,13 @@ Real model validation caught an overlong two-frame response. The analyzer now us
 Real phase2 validation: `qwen3-vl:4b-instruct` analyzed the supplied121.29-second First Free Pack video in46.31seconds:18 measured scene cuts,4 real frames/findings, and zero invented words for the silent source. The findings distinguish website, card reveal, loading screen and product page. These are still uncertain model interpretations requiring final review. Additional supplied-video and speech tests continue separately.
 
 The requested default remains `qwen3-vl:4b`. Current public4b weights resolve to the thinking variant; real bounded batches exhausted the token budget even with `think:false`. For the tested local configuration explicitly set `OLLAMA_MODEL=qwen3-vl:4b-instruct`. This is the4B instruct variant, not a hosted fallback. [Official tags](https://ollama.com/library/qwen3-vl/tags) and [thinking controls](https://docs.ollama.com/capabilities/thinking).
+
+Additional phase2 evidence: the31.6-second PS5 product video completed in47.47seconds with7 scene cuts and4 distinct source findings. The two-source run peaked4923MiB GPU memory, baseline450MiB. The4K trailer yielded145 measured cuts, then exposed a Faster-whisper/PyAV audio-decoding incompatibility; no transcript or full trailer analysis was reported as successful. A safe FFmpeg PCM decoder fix is being validated separately.
+
+## Phase 3 — Source-grounded highlight ranking
+
+Added `local_highlights.py` and28 tests. Eight configurable normalized factors combine actual frames, uncertain model findings, source continuity, audio evidence, audience and campaign rules. Loudness alone cannot select a highlight. Contiguous chronological windows preserve source integrity; overlapping near-duplicates are suppressed and insufficient footage produces fewer candidates with a reason. Scores are explained heuristics, not performance predictions or semantic approval.
+
+The saved real first-video analysis produced three distinct20-second windows:27.9303–47.9303,62.3323–82.3323,88.5575–108.5575. Ranking itself makes no new inference request. Native campaign schemas/parser/metadata/compliance now retain automation, original-footage, music/voice/promotion restrictions and required HTTPS links. Explicit automation prohibitions stop automatic candidate selection. Semantic requirements still need review.
+
+All150 backend tests passed after the phase3 changes, including28 ranking and3 new native-rule regression tests. This does not establish successful automatic editing or metadata generation; those phases follow.
