@@ -1,0 +1,4 @@
+# Optional local-only analysis. Install after requirements.txt.
+# Official package sources: scenedetect.com and github.com/SYSTRAN/faster-whisper.
+scenedetect-headless==0.7.3
+faster-whisper==1.2.1
