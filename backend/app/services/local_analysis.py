@@ -343,6 +343,79 @@ def _validate_transcript(raw: dict, duration: float) -> dict:
     return transcript
 
 
+def decode_audio_pcm(source_path: str | Path, duration: float, cancel=None):
+    """Decode pinned local media into bounded 16 kHz mono float32 samples.
+
+    Faster-whisper accepts a NumPy waveform directly. Using the application's
+    existing FFmpeg boundary avoids PyAV version-specific file-opening APIs and
+    keeps container/protocol validation identical to the native renderer.
+    """
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise ConfigurationError("Install requirements-local-ai.txt for local speech waveform processing") from exc
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 0 < duration <= 3600:
+        raise PipelineError("Local speech decoding requires a measured source duration of at most one hour")
+    _check(cancel)
+    path = Path(source_path).resolve()
+    args = [media.ffmpeg_binary(), "-v", "error", *media.safe_input_options(path), "-i", str(path), "-t", f"{duration:.6f}", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_f32le", "-f", "f32le", "pipe:1"]
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False)
+    maximum_bytes = math.ceil((duration + .1) * 16000) * 4
+    waveform = bytearray()
+    finished = threading.Event()
+    interrupted = []
+    deadline = time.monotonic() + _setting("LOCAL_WHISPER_DECODE_TIMEOUT_SECONDS", 300, 10, 1800)
+
+    def watch():
+        while not finished.wait(.1):
+            reason = None
+            try:
+                _check(cancel)
+            except InferenceCancelled:
+                reason = "cancelled"
+            if reason is None and time.monotonic() >= deadline:
+                reason = "timeout"
+            if reason:
+                interrupted.append(reason)
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                return
+
+    watcher = threading.Thread(target=watch, name="acf-speech-decode-cancel", daemon=True)
+    watcher.start()
+    try:
+        while True:
+            _check(cancel)
+            chunk = process.stdout.read(65536)
+            if not chunk:
+                break
+            if len(waveform) + len(chunk) > maximum_bytes:
+                raise PipelineError("Decoded speech audio exceeded its measured-duration memory bound")
+            waveform.extend(chunk)
+        process.communicate(timeout=15)
+        _check(cancel)
+        if interrupted:
+            raise PipelineError("Local speech audio decoding exceeded its time limit")
+        if process.returncode != 0:
+            raise PipelineError("FFmpeg could not decode the source speech audio")
+        if not waveform or len(waveform) % 4:
+            raise PipelineError("FFmpeg returned an empty or incomplete speech waveform")
+        # The array owns a reference to the byte buffer without a second copy of
+        # a full-hour waveform (at most about 230 MB at this sample format).
+        audio = np.frombuffer(waveform, dtype="<f4")
+        if not np.isfinite(audio).all():
+            raise PipelineError("Source speech audio contains invalid samples")
+        return audio
+    finally:
+        finished.set()
+        watcher.join(timeout=.5)
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+
+
 def transcribe_local(path: Path, info: dict, cancel=None, progress=None) -> dict:
     if not info["has_audio"]:
         return Transcript(provider="no_audio", timing_source="none").model_dump()
@@ -354,8 +427,12 @@ def transcribe_local(path: Path, info: dict, cancel=None, progress=None) -> dict
     allow_download = os.getenv("LOCAL_AI_ALLOW_MODEL_DOWNLOAD", "false").lower() in {"true", "1", "yes"}
     model = None
     try:
+        if progress:
+            progress("Decoding actual source speech audio with local FFmpeg", 14)
+        waveform = decode_audio_pcm(path, info["duration"], cancel)
+        _check(cancel)
         model = WhisperModel(os.getenv("LOCAL_WHISPER_MODEL", "base"), device="cpu", compute_type="int8", cpu_threads=_setting("LOCAL_WHISPER_CPU_THREADS", 4, 1, 16), num_workers=1, download_root=str(settings.media_root / "models" / "faster-whisper"), local_files_only=not allow_download)
-        segments, details = model.transcribe(str(path), beam_size=3, word_timestamps=True, vad_filter=True, condition_on_previous_text=False)
+        segments, details = model.transcribe(waveform, beam_size=3, word_timestamps=True, vad_filter=True, condition_on_previous_text=False)
         words, phrases = [], []
         for segment in segments:
             _check(cancel)
@@ -398,7 +475,7 @@ class LocalSourceAnalyzer:
         model_digest = status.get("digest")
         if not model_digest:
             raise ConfigurationError("Local model identity is unavailable; analysis was not generated")
-        choices = {"max_frames": _setting("LOCAL_AI_MAX_FRAMES", 12, 1, 48), "batch_size": _setting("LOCAL_AI_FRAME_BATCH_SIZE", 1, 1, 4), "whisper_model": os.getenv("LOCAL_WHISPER_MODEL", "base"), "whisper_device": "cpu", "whisper_compute": "int8", "scene_detector": "pyscenedetect_content_27", "game": game[:160], "context": context[:4000], "context_size": status.get("context_size"), "analyzer": ANALYZER_VERSION}
+        choices = {"max_frames": _setting("LOCAL_AI_MAX_FRAMES", 12, 1, 48), "batch_size": _setting("LOCAL_AI_FRAME_BATCH_SIZE", 1, 1, 4), "whisper_model": os.getenv("LOCAL_WHISPER_MODEL", "base"), "whisper_device": "cpu", "whisper_compute": "int8", "speech_decode": "ffmpeg_mono_16000_f32le_v1", "scene_detector": "pyscenedetect_content_27", "game": game[:160], "context": context[:4000], "context_size": status.get("context_size"), "analyzer": ANALYZER_VERSION}
         source_hash = media.sha256_file(path)
         supplied = _validate_transcript(transcript, info["duration"]) if transcript is not None else None
         identity = hashlib.sha256(json.dumps({"source": source_hash, "model_digest": model_digest, "endpoint": status.get("endpoint"), "settings": choices, "supplied_transcript": supplied}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

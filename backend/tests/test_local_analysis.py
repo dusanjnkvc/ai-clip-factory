@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from app.services import media
 from app.services.local_analysis import (LocalSourceAnalyzer, SourceAnalysis, VisionBatch,
-    audio_rms, detect_scenes, sample_frames, sampling_times, transcribe_local, vision_batch_schema)
+    audio_rms, decode_audio_pcm, detect_scenes, sample_frames, sampling_times, transcribe_local, vision_batch_schema)
 from app.services.media import ConfigurationError, PipelineError
 from app.services.ollama_provider import InferenceCancelled
 
@@ -224,21 +224,48 @@ def test_actual_ffmpeg_audio_rms_is_not_an_invented_event(tmp_path):
 
 def test_faster_whisper_uses_cpu_int8_no_download_and_real_returned_timestamps(monkeypatch, tmp_path):
     faster_whisper = pytest.importorskip("faster_whisper")
+    np = pytest.importorskip("numpy")
+    source = tmp_path / "actual-source-audio.mp4"
+    media.run_media([media.ffmpeg_binary(), "-v", "error", "-f", "lavfi", "-i", "color=c=green:size=160x90:rate=12", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=8000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(source)])
     calls = {}
     class Model:
         def __init__(self, name, **options):
             calls.update(name=name, **options)
             self.model = SimpleNamespace(unload_model=lambda **_: calls.update(unloaded=True))
-        def transcribe(self, path, **options):
+        def transcribe(self, audio, **options):
+            assert isinstance(audio, np.ndarray) and audio.dtype == np.float32
+            assert audio.ndim == 1 and abs(len(audio) - 32000) < 1600
+            assert np.isfinite(audio).all() and float(np.std(audio)) > .03
+            calls["actual_waveform_received"] = True
             calls["transcribe"] = options
             word = SimpleNamespace(start=.2, end=.7, word="Actual")
             segment = SimpleNamespace(start=.2, end=.7, text="Actual", words=[word])
             return iter([segment]), SimpleNamespace(language="en")
     monkeypatch.setattr(faster_whisper, "WhisperModel", Model)
     monkeypatch.delenv("LOCAL_AI_ALLOW_MODEL_DOWNLOAD", raising=False)
-    result = transcribe_local(tmp_path / "not-opened-by-double.mp4", {"has_audio": True, "duration": 2})
+    result = transcribe_local(source, {"has_audio": True, "duration": 2})
     assert calls["device"] == "cpu" and calls["compute_type"] == "int8"
     assert calls["num_workers"] == 1 and calls["local_files_only"] is True
-    assert calls["transcribe"]["word_timestamps"] and calls["unloaded"]
+    assert calls["transcribe"]["word_timestamps"] and calls["unloaded"] and calls["actual_waveform_received"]
     assert result["words"] == [{"word": "Actual", "start": .2, "end": .7}]
     assert result["provider"] == "faster_whisper_local_cpu_int8"
+
+
+def test_speech_decoder_uses_actual_mono_16khz_float32_waveform(tmp_path):
+    np = pytest.importorskip("numpy")
+    source = tmp_path / "stereo-source.mp4"
+    media.run_media([media.ffmpeg_binary(), "-v", "error", "-f", "lavfi", "-i", "color=c=blue:size=160x90:rate=12", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-ac", "2", "-c:a", "aac", "-shortest", str(source)])
+    audio = decode_audio_pcm(source, 1)
+    assert audio.ndim == 1 and audio.dtype == np.float32
+    assert abs(len(audio) - 16000) < 160
+    assert .03 < float(np.sqrt(np.mean(audio ** 2))) < .15
+
+
+def test_speech_decoder_rejects_unbounded_source_and_honors_cancellation(tmp_path):
+    pytest.importorskip("numpy")
+    with pytest.raises(PipelineError, match="at most one hour"):
+        decode_audio_pcm(tmp_path / "unused.mp4", 3601)
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(InferenceCancelled):
+        decode_audio_pcm(tmp_path / "unused.mp4", 2, cancelled)

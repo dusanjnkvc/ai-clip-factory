@@ -41,3 +41,7 @@ Added `local_highlights.py` and28 tests. Eight configurable normalized factors c
 The saved real first-video analysis produced three distinct20-second windows:27.9303–47.9303,62.3323–82.3323,88.5575–108.5575. Ranking itself makes no new inference request. Native campaign schemas/parser/metadata/compliance now retain automation, original-footage, music/voice/promotion restrictions and required HTTPS links. Explicit automation prohibitions stop automatic candidate selection. Semantic requirements still need review.
 
 All150 backend tests passed after the phase3 changes, including28 ranking and3 new native-rule regression tests. This does not establish successful automatic editing or metadata generation; those phases follow.
+
+### Audio decoder compatibility correction
+
+A real trailer test exposed `av.open(metadata_errors=...)` incompatibility in the installed Faster-whisper/PyAV combination. Speech input now uses the existing safe FFmpeg demuxer/container whitelist to decode actual16kHz mono float32 audio, with duration/memory/timeout/cancellation bounds, before passing the waveform to Faster-whisper. No renderer or database was replaced. All17 analyzer tests pass, including actual audio decoding. The real151.67-second trailer's local CPUint8 recognizer ran in4.94seconds and returned one word; this proves inference, not transcript accuracy. Sparse speech/music still needs review. Evidence remains ignored in `.runtime/warzone-transcript.json`.
