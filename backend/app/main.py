@@ -130,6 +130,11 @@ class Login(BaseModel):
 def health():
     return {'status':'ok','version':'0.2.0','free_mode':free_mode(),'local_no_auth':local_no_auth(),'browser_mode':False}
 
+@app.get('/api/local-ai/status')
+def local_ai_status(user: User=Depends(current_user)):
+    from .services.ollama_provider import OllamaProvider
+    return OllamaProvider().status(require_vision=True)
+
 @app.post('/api/auth/register')
 def register(body: Registration, response: Response, request: Request, db: DBSession=Depends(get_db)):
     rate_limit('register:'+(request.client.host if request.client else 'unknown'),limit=8)
