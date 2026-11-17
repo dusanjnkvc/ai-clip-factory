@@ -45,3 +45,11 @@ All150 backend tests passed after the phase3 changes, including28 ranking and3 n
 ### Audio decoder compatibility correction
 
 A real trailer test exposed `av.open(metadata_errors=...)` incompatibility in the installed Faster-whisper/PyAV combination. Speech input now uses the existing safe FFmpeg demuxer/container whitelist to decode actual16kHz mono float32 audio, with duration/memory/timeout/cancellation bounds, before passing the waveform to Faster-whisper. No renderer or database was replaced. All17 analyzer tests pass, including actual audio decoding. The real151.67-second trailer's local CPUint8 recognizer ran in4.94seconds and returned one word; this proves inference, not transcript accuracy. Sparse speech/music still needs review. Evidence remains ignored in `.runtime/warzone-transcript.json`.
+
+## Phase 4 — Automatic timeline assembly
+
+Added `local_timeline.py` and14 tests. Source-bound ranked windows become High-Energy Gaming, Cinematic Storytelling, or Suspense and Payoff plans with chronological cuts, restrained numeric crop motion/zoom, source-supported hook text and original-or-muted audio. Native Scene/ClipPlan contracts now validate crop endpoints, whitelisted transitions/effects, local-AI provenance and audio treatment. Semantic local-AI context remains REVIEW_REQUIRED.
+
+A bounded model evaluation may only score validated candidate IDs; it cannot create a timestamp, introduce source material or select an unavailable plan. Its highest score selects one winner (local ranking breaks ties), with all alternatives kept internally. Missing/invalid model evaluation stops rather than creating a fallback winner.
+
+All166 backend tests passed, including14 timeline tests. The actual saved first-video findings assemble three20-second styles with2,2 and4 purposeful shots. Unit evaluation uses a controlled provider; real winner selection is pending the coordinated end-to-end run. Applying the new render parameters is the next phase; assembly alone is not a rendered-edit acceptance test.

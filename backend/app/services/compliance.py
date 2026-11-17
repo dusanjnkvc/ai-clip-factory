@@ -101,5 +101,7 @@ def check_compliance(
         semantic("campaign_contradictions", "Contradictory campaign rules: " + "; ".join(campaign.contradictions))
     if not campaign.evidence:
         semantic("campaign_evidence", "No source evidence is stored for these campaign rules. Review the original brief and correct/evidence the rules.")
+    if clip.generation_method == "local_ai":
+        semantic("creative_context", "Review model interpretations, source context, hook, framing and metadata against the actual final video. Local inference does not independently verify those claims.")
     status = "FAIL" if any(c["status"] == "FAIL" for c in checks) else "REVIEW_REQUIRED" if any(c["status"] == "REVIEW_REQUIRED" for c in checks) else "PASS"
     return {"status": status, "publish_ready": status == "PASS", "checks": checks, "rules_snapshot": campaign.model_dump(), "semantic_evidence": semantic_evidence}

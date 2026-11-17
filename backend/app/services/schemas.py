@@ -106,6 +106,10 @@ class Scene(Model):
     crop_y: float = Field(default=0.5, ge=0, le=1)
     zoom: float = Field(default=1, ge=1, le=1.5)
     rationale: str = Field(default="", max_length=1000)
+    crop_x_end: float | None = Field(default=None, ge=0, le=1)
+    crop_y_end: float | None = Field(default=None, ge=0, le=1)
+    transition: Literal["cut", "fade"] = "cut"
+    effect: Literal["none", "contrast", "retro"] = "none"
 
     @model_validator(mode="after")
     def ordered(self):
@@ -164,9 +168,10 @@ class ClipPlan(Model):
     scores: Scores
     transcript_excerpt: str = ""
     semantic_notes: list[str] = Field(default_factory=list)
-    generation_method: Literal["hosted_ai", "manual_local"] = "hosted_ai"
+    generation_method: Literal["hosted_ai", "manual_local", "local_ai"] = "hosted_ai"
     score_origin: Literal["heuristic", "not_scored"] = "heuristic"
     manual_metadata: ManualMetadata | None = None
+    audio_treatment: Literal["source", "mute"] = "source"
 
     @model_validator(mode="after")
     def timeline(self):

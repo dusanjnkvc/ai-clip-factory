@@ -525,7 +525,7 @@ class ReviewUpdate(BaseModel):
 def review_clip(clip_id: str,body: ReviewUpdate,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     clip=owned(db,RenderedClip,clip_id,user)
     plan=db.get(EditingPlan,clip.editing_plan_id)
-    allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions'}
+    allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','creative_context','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions'}
     evidence={}
     for rule,value in body.evidence.items():
         if rule not in allowed or not isinstance(value,dict) or value.get('confirmed') is not True or len(str(value.get('note','')).strip())<8:
