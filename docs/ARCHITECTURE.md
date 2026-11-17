@@ -1,6 +1,6 @@
 # Architecture
 
-The application has a default free browser-hosted edition and an optional native local-server edition. Both use manual clip choices and supplied campaign/subtitle evidence. Neither pretends to perform AI analysis without a model.
+The application has a default free browser-hosted edition and an optional native local-server edition. Both use manual review and supplied campaign/subtitle evidence. The browser edition also offers locally measured, assisted editing concepts. Neither pretends to perform semantic AI analysis without a model.
 
 ## Browser edition on GitHub Pages
 
@@ -9,6 +9,16 @@ Next.js builds a static export using `NEXT_PUBLIC_BROWSER_MODE=true` and the rep
 The browser adapter stores campaign/source/clip records and media in IndexedDB for the current origin/profile/device. Source selection does not upload videos to GitHub. FFmpeg WebAssembly runs on the visitor’s CPU and renders the selected source range/crop with optional supplied caption cues. The UI requires no login or API key. Project code is public in the dedicated Pages repository; users’ browser records are not repository files.
 
 A browser queue is tied to the open tab. It cannot offer durable worker leases/recovery after closure, cross-device sync, or cloud backup. Reloading or closing can interrupt renders; storage eviction/clearing can lose data. Browser CPU/memory limits differ from native FFmpeg. Local no-service-fee operation still uses the visitor’s electricity, device, storage, and internet.
+
+### Browser Creative Director
+
+`frontend/lib/creative/analyzer.ts` decodes representative frames through browser media/canvas APIs and computes bounded visual metrics and optional audio RMS. Fingerprints include source identity and supplied cues. Cached measurements do not infer semantic events, objects, reactions, or dialogue.
+
+The pure Director engine in `frontend/lib/creative/` turns those measurements, actual source bounds, explicit rules, and editor options into different source-window/pacing/story proposals. Eight supported style definitions, source overlap/history checks, explained hook heuristics, publishing text formatting, and strict preflight share typed contracts. `CREATIVE_PROVIDER` explicitly reports the semantic provider unavailable; no paid call or local AI model is substituted.
+
+The Director interface persists projects/drafts through the browser API adapter into IndexedDB. The queue validates actual referenced sources and the storyboard before passing it to `browser-media.ts`. That renderer handles multi-source composition, animated crops, cue captions, shot fades, treatments, audio choice, and supported output sizes. It probes the encoded output and fully decodes it before storing a completed clip. Pre-export checks revalidate Creative Director plans; semantic campaign suitability remains a human review task.
+
+This flow is browser-only. It does not assume new FastAPI project endpoints, a database migration, an AI service, or a cloud media worker. See [Creative Director](CREATIVE_DIRECTOR.md) for controls and limits.
 
 ## Optional native local edition
 

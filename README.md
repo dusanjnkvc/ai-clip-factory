@@ -1,12 +1,12 @@
 # AI Clip Factory
 
-A free, manual clipping workspace with **no login, paid AI API, or subscription requirement**. The GitHub Pages edition stores your videos and project records in your browser and renders clips there with FFmpeg WebAssembly. It needs no Python server, cloud worker, OpenAI key, or local AI model.
+A free clipping workspace with **no login, paid AI API, or subscription requirement**. The GitHub Pages edition stores your videos and project records in your browser and renders clips there with FFmpeg WebAssembly. It needs no Python server, cloud worker, OpenAI key, or local AI model.
 
-The workflow uses manual clip selection/review, optional supplied SRT/VTT subtitles, and user-authored metadata. It does not claim AI transcription, best-moment detection, semantic video understanding, or viral scoring. Your existing device, electricity, disk, and internet are still needed. See [implementation status](docs/STATUS.md) for verification and limitations. This project is separate from LogEN.
+Choose a simple manual clip or use the browser edition's Creative Director to measure source frames and build editable, source-bound concepts. These are local assisted proposals, not semantic AI analysis. Optional supplied SRT/VTT subtitles and user-authored metadata remain the evidence for words and claims. No AI transcription, event detection, or viral prediction is performed. Your existing device, electricity, disk, and internet are still needed. See [implementation status](docs/STATUS.md) for verification and limitations. This project is separate from LogEN.
 
 ## Open the browser edition
 
-After the dedicated GitHub repository’s Pages deployment succeeds, open its published Pages URL. **A configured workflow is not proof that the site is already deployed**; the final delivery supplies the actual verified address or any remaining setup.
+Open the [free browser app](https://dusanjnkvc.github.io/ai-clip-factory/). The dedicated [GitHub repository](https://github.com/dusanjnkvc/ai-clip-factory) and initial Pages deployment are live. New source changes appear after their own Pages deployment succeeds.
 
 No account or API key is required:
 
@@ -16,6 +16,23 @@ No account or API key is required:
 4. Optionally supply an SRT/VTT file with cue times relative to the original source. Without that file, the free workflow does not transcribe speech or invent captions.
 5. Keep the tab open while FFmpeg renders. Preview the real MP4, review compliance, and download the clip/upload package.
 6. Publish manually through your authorized platform account. Record the actual public URL and publication time, then complete the campaign submission separately.
+
+## Creative Director
+
+This section is available in the **browser edition**. The optional Python edition keeps its existing manual clip workflow.
+
+1. Import an authorized source through **Create Clips**, and save/review a campaign if the edit is for one. Open **AI Creative Director**, then select that source and campaign.
+2. Choose a preferred duration, pace, audience, style, and output size. Analyze the source and create concepts. Local measurements include up to 24 decoded frame samples, candidate visual changes, brightness/detail, low-confidence crop hints, and bounded audio-level analysis when the browser can decode it. No person, game event, scene meaning, or dialogue is recognized.
+3. Compare the proposed High Engagement, Cinematic, and Creative Storytelling concepts. Short footage can produce fewer than three proposals; the app explains missing alternatives instead of inventing footage. Hook scores are explained editing heuristics, not retention forecasts.
+4. Edit source times, shot order, text, framing, crop motion, composition, transitions, effects, captions, and metadata. Preview actual source shots, lock decisions, and use undo/redo. Save projects locally; regeneration creates a fresh proposal after preserving the current draft.
+5. Supply separate authorized footage for split-screen styles or campaign-required original creator footage. Importing a file alone does not insert it into the storyboard or prove campaign suitability. If automation is prohibited, record your actual manual decisions and verify that the campaign permits the assisted workflow.
+6. Resolve blocking preflight errors, then render Fast Export or Premium Export. Both use local CPU encoding. Inspect the resulting MP4 and remaining review checks, then use the publishing assistant to copy source/editor-grounded text for manual posting.
+
+Eight styles are available: Cinematic Gaming, High-Energy Action, Kinetic Typography, Reaction / Split Screen, Interactive Tutorial, Comparison / VS, Retro Arcade, and Minimal Premium. They use supported shot pacing, composition, cue captions, and restrained treatments. Styles do not create absent gameplay, reactions, narration, music, or outcomes.
+
+The renderer supports 1080 × 1920, 720 × 1280, and 540 × 960 H.264/AAC output; bounded animated crops; full-frame fit with a blurred background; two-source split composition; cuts or short shot fades; contrast/retro treatments; and original audio or mute. Caption animation is **cue-level**, using supplied timestamps and safe margins. There are no fabricated word timings, automatic face tracking, or added AI voices. A larger output does not restore missing source detail.
+
+Projects remain labeled `local_assisted` with the semantic provider `not_configured`. Semantic campaign checks stay **REVIEW_REQUIRED**, and a successful render never establishes publication readiness. See [the Creative Director guide](docs/CREATIVE_DIRECTOR.md) for scope and evidence boundaries.
 
 ## Where browser data lives
 
@@ -31,9 +48,9 @@ The dedicated repository is [dusanjnkvc/ai-clip-factory](https://github.com/dusa
 
 The chosen free hosting path uses a **public repository** named `ai-clip-factory`. Its application source is public. Secrets, `.env`, uploaded media, local databases, build outputs, and browser data must stay out of Git. A public source repository does not publish your browser’s IndexedDB videos.
 
-The Pages workflow builds a static Next.js export with `NEXT_PUBLIC_BROWSER_MODE=true` and `NEXT_PUBLIC_BASE_PATH=/ai-clip-factory`, includes the local FFmpeg assets, and deploys `frontend/out`. In the repository’s **Settings → Pages**, select **GitHub Actions** as the build/deployment source if it is not already set. The final URL is available only after a successful deployment.
+The Pages workflow builds a static Next.js export with `NEXT_PUBLIC_BROWSER_MODE=true` and `NEXT_PUBLIC_BASE_PATH=/ai-clip-factory`, includes the local FFmpeg assets, and deploys `frontend/out`. The repository is configured to use **GitHub Actions** as its Pages source. Check the workflow result for each update; a local build or push alone does not establish a successful new deployment.
 
-To reproduce its static build locally, run `npm ci`, `node --test scripts/test-browser.mjs`, and `npm run build:pages` from `frontend/`. Preparation copies the single-thread FFmpeg core and worker modules and packages the caption font for same-origin loading. Notices are included in `ffmpeg/LICENSES.txt` and `ffmpeg/FONT-LICENSE.txt`; FFmpeg core uses GPL-2.0-or-later and Noto Sans uses SIL OFL 1.1.
+To reproduce its static build locally, run `npm ci`, `node --test scripts/test-browser.mjs scripts/test-creative.mjs`, and `npm run build:pages` from `frontend/`. After preparation has supplied the font/assets, `node --test scripts/test-wasm.mjs` exercises the real packaged FFmpeg core through the production renderer. Preparation copies the single-thread FFmpeg core and worker modules and packages the caption font for same-origin loading. Notices are included in `ffmpeg/LICENSES.txt` and `ffmpeg/FONT-LICENSE.txt`; FFmpeg core uses GPL-2.0-or-later and Noto Sans uses SIL OFL 1.1.
 
 If repository creation/connection is still needed, create an empty public `ai-clip-factory` repository under `dusanjnkvc`, without an initialized README/license/gitignore, then run from this checkout:
 
@@ -94,7 +111,7 @@ npm.cmd run build
 Pop-Location
 ```
 
-The original hosted-adapter MVP had 46 passing backend tests. That historical result does not verify later free/browser changes; current test/build/browser results are recorded in the final delivery and [status](docs/STATUS.md). Technical render fixtures use generated video/audio without third-party footage. No unit test establishes live social permissions, campaign approval, earnings, or a cloud deployment.
+Current test/build/browser evidence is recorded in the final delivery and [status](docs/STATUS.md). Technical render fixtures use generated video/audio without third-party footage. The real WASM integration test runs the production renderer in a Node worker-shaped host; it does not replace browser UI testing. No unit test establishes live social permissions, campaign approval, earnings, or a cloud deployment.
 
 The [native benchmark](docs/BENCHMARK.md) uses the optional local API/worker and is separate from browser rendering. It defaults to one manual range and refuses hosted jobs unless explicitly allowed. Browser renders must be measured in the actual browser/device with the tab open; do not reuse native-worker timings as browser results.
 

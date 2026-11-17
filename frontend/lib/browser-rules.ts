@@ -9,13 +9,13 @@ function containsRequiredToken(text: string, value: string): boolean {
 }
 
 export function emptyRules(): BrowserRow {
-  return { campaign_name: "Untitled campaign", campaign_type: "unknown", allowed_platforms: [], min_duration: null, max_duration: null, required_hashtags: [], required_mentions: [], required_disclosures: [], required_branding: [], permitted_source_material: [], prohibited_content: [], audio_restrictions: [], minimum_views: null, reward_per_1000: null, flat_fee: null, maximum_payout: null, currency: null, draft_approval_required: null, submission_deadline: null, submission_window_minutes: null, submission_instructions: null, submission_url: null, evidence: [], uncertainties: [], contradictions: [] };
+  return { campaign_name: "Untitled campaign", campaign_type: "unknown", allowed_platforms: [], min_duration: null, max_duration: null, required_hashtags: [], required_mentions: [], required_disclosures: [], required_branding: [], required_links: [], permitted_source_material: [], prohibited_content: [], prohibited_footage: [], audience_restrictions: [], audio_restrictions: [], automated_clipping_allowed:null, ai_generated_allowed:null, music_allowed:null, ai_voice_allowed:null, original_footage_required:null, paid_promotion_allowed:null, minimum_views: null, reward_per_1000: null, flat_fee: null, maximum_payout: null, currency: null, draft_approval_required: null, submission_deadline: null, submission_window_minutes: null, submission_instructions: null, submission_url: null, evidence: [], uncertainties: [], contradictions: [] };
 }
 
 export function validateRules(supplied: BrowserRow): BrowserRow {
   if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) throw new Error("Campaign rules must be an object.");
   const rules = { ...emptyRules(), ...structuredClone(supplied) };
-  for (const field of ["allowed_platforms", "required_hashtags", "required_mentions", "required_disclosures", "required_branding", "permitted_source_material", "prohibited_content", "audio_restrictions", "uncertainties", "contradictions", "evidence"]) {
+  for (const field of ["allowed_platforms", "required_hashtags", "required_mentions", "required_disclosures", "required_branding", "required_links", "prohibited_footage", "audience_restrictions", "permitted_source_material", "prohibited_content", "audio_restrictions", "uncertainties", "contradictions", "evidence"]) {
     if (!Array.isArray(rules[field])) throw new Error(`${field} must be a list.`);
     if (field !== "evidence" && rules[field].some((value: unknown) => typeof value !== "string")) throw new Error(`${field} must contain text values.`);
   }
@@ -24,6 +24,8 @@ export function validateRules(supplied: BrowserRow): BrowserRow {
     if (rules[field] !== null && (!Number.isFinite(rules[field]) || rules[field] < 0)) throw new Error(`${field} must be a nonnegative number or null.`);
   }
   if (rules.draft_approval_required !== null && typeof rules.draft_approval_required !== "boolean") throw new Error("Draft approval must be true, false, or unknown.");
+  for(const field of ['automated_clipping_allowed','ai_generated_allowed','music_allowed','ai_voice_allowed','original_footage_required','paid_promotion_allowed']) if(rules[field]!==null&&typeof rules[field]!=='boolean')throw new Error(`${field} must be true, false, or unknown.`);
+  for(const value of rules.required_links){try{const url=new URL(value);if(url.protocol!=='https:'||url.username||url.password)throw new Error();}catch{throw new Error('Required links must be HTTPS URLs without embedded credentials.');}}
   if (rules.submission_url != null) {
     try { const url = new URL(rules.submission_url); if (url.protocol !== 'https:' || url.username || url.password) throw new Error(); }
     catch { throw new Error('A campaign submission link must use HTTPS without embedded credentials.'); }
@@ -51,6 +53,14 @@ export function extractRules(brief: string, name: string): BrowserRow {
     if (match) assign("draft_approval_required", ["yes", "required"].includes(match[1].toLowerCase()), line);
     match = line.match(/^submission\s+window\s*:\s*(\d+)\s*(?:m|min|minutes?)\.?$/i);
     if (match) assign("submission_window_minutes", Number(match[1]), line);
+    for(const [label,field] of [['Automated clipping','automated_clipping_allowed'],['AI generated videos','ai_generated_allowed'],['Music','music_allowed'],['AI voice','ai_voice_allowed'],['Paid promotion','paid_promotion_allowed']]){
+      const explicit=line.match(new RegExp(`^${label}\\s*:\\s*(allowed|permitted|yes|prohibited|not allowed|no)\\.?$`,'i'));
+      if(explicit)assign(field,['allowed','permitted','yes'].includes(explicit[1].toLowerCase()),line);
+    }
+    match=line.match(/^original (?:creator )?footage\s*:\s*(required|yes|not required|no)\.?$/i);if(match)assign('original_footage_required',['required','yes'].includes(match[1].toLowerCase()),line);
+    match=line.match(/^required links?\s*:\s*(.+)$/i);if(match)assign('required_links',match[1].trim().split(/\s+/),line);
+    if(/^(?:no automated clipping|automated clipping (?:is )?(?:prohibited|not allowed))[.!]?$/i.test(line))assign('automated_clipping_allowed',false,line);
+    if(/^(?:no (?:fully )?AI[- ]generated videos|(?:fully )?AI[- ]generated videos (?:are )?(?:prohibited|not allowed))[.!]?$/i.test(line))assign('ai_generated_allowed',false,line);
   }
   if (rules.min_duration !== null && rules.max_duration !== null && rules.min_duration > rules.max_duration) rules.contradictions.push("Minimum duration exceeds maximum duration.");
   return validateRules(rules);
@@ -94,17 +104,33 @@ export function parseSubtitles(content: string, extension: string, sourceDuratio
   return cues.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
-export function validatePlan(plan: BrowserRow, sourceDuration: number): BrowserRow {
+export function validatePlan(plan: BrowserRow, sourceDuration: number, sourceDurations?: Record<string,number>): BrowserRow {
   if (!Number.isFinite(plan.start) || !Number.isFinite(plan.end) || plan.start < 0 || plan.end <= plan.start || plan.end > sourceDuration + .001) throw new Error("Choose start and end times inside your source video.");
   if (!Array.isArray(plan.scenes) || !plan.scenes.length || plan.scenes.length > 20) throw new Error("An editing plan must have 1–20 source scenes.");
   let duration = 0;
   for (const scene of plan.scenes) {
-    if (![scene.start, scene.end, scene.crop_x, scene.crop_y, scene.zoom].every(Number.isFinite) || scene.start < plan.start || scene.end > plan.end || scene.end <= scene.start) throw new Error("A scene is outside the selected source range.");
+    const isPrimary=!scene.source_id||scene.source_id===plan.source_id;
+    const bound=sourceDurations&&scene.source_id?sourceDurations[scene.source_id]:sourceDuration;
+    if (![scene.start, scene.end, scene.crop_x, scene.crop_y, scene.zoom,bound].every(Number.isFinite) || scene.start<0 || scene.end>bound+.001 || scene.end<=scene.start || isPrimary&&(scene.start<plan.start||scene.end>plan.end)) throw new Error("A scene is outside its authorized source range.");
     if (scene.crop_x < 0 || scene.crop_x > 1 || scene.crop_y < 0 || scene.crop_y > 1 || scene.zoom < 1 || scene.zoom > 1.5) throw new Error("Use crop coordinates between 0 and 1 and zoom between 1 and 1.5.");
+    if(!['fill','fit_blur','split'].includes(scene.composition||'fill')||!['cut','fade'].includes(scene.transition||'cut')||!['none','contrast','retro'].includes(scene.effect||'none'))throw new Error('Choose a supported composition, transition, and effect.');
+    for(const field of ['crop_x_end','crop_y_end'])if(scene[field]!=null&&(!Number.isFinite(scene[field])||scene[field]<0||scene[field]>1))throw new Error('Animated crop endpoints must be between 0 and 1.');
+    if(scene.overlay_text!=null&&(typeof scene.overlay_text!=='string'||scene.overlay_text.length>180))throw new Error('On-screen labels are limited to 180 characters.');
+    if(scene.composition==='split'){
+      const second=sourceDurations?.[scene.secondary_source_id],start=scene.secondary_start??0;
+      if(!scene.secondary_source_id||!Number.isFinite(second)||!Number.isFinite(start)||start<0||start+scene.end-scene.start>second!+.001)throw new Error('Split screen needs an available second source covering the shot duration.');
+    }
     duration += scene.end - scene.start;
   }
   if (duration < 1 || duration > 180) throw new Error("Browser clips must be between 1 and 180 seconds. Use a shorter range to limit browser memory use.");
   if (typeof plan.title !== "string" || !plan.title.trim() || plan.title.length > 100) throw new Error("A clip title of 1–100 characters is required.");
+  if(plan.output_width!=null||plan.output_height!=null)if(![[1080,1920],[720,1280],[540,960]].some(([w,h])=>plan.output_width===w&&plan.output_height===h))throw new Error('Choose a supported vertical export resolution.');
+  if(plan.audio_treatment!=null&&!['source','mute'].includes(plan.audio_treatment))throw new Error('Audio treatment must preserve or mute source audio.');
+  const captions=plan.caption_settings;
+  if(captions){
+    if(!Number.isFinite(captions.font_size)||captions.font_size<36||captions.font_size>100||!Number.isFinite(captions.safe_top)||captions.safe_top<90||captions.safe_top>600||!Number.isFinite(captions.safe_bottom)||captions.safe_bottom<150||captions.safe_bottom>650)throw new Error('Caption size and safe zones are outside supported bounds.');
+    if(!/^#[0-9a-f]{6}$/i.test(captions.color)||!/^#[0-9a-f]{6}$/i.test(captions.highlight)||!['none','fade','pop','slide'].includes(captions.animation)||!['upper','lower','center'].includes(captions.position))throw new Error('Caption colors, animation, or position are invalid.');
+  }
   return plan;
 }
 
@@ -121,7 +147,7 @@ export function manualPlan(selection: BrowserRow, source: BrowserRow, rules: Bro
 
 export function manualMetadata(plan: BrowserRow, rules: BrowserRow): BrowserRow {
   const supplied = plan.manual_metadata || {}; let text = supplied.description || plan.transcript_excerpt || "";
-  for (const required of [...rules.required_mentions, ...rules.required_disclosures]) if (!containsRequiredToken(text, required)) text = (text + "\n\n" + required).trim();
+  for (const required of [...rules.required_mentions, ...rules.required_disclosures,...(rules.required_links||[])]) if (!containsRequiredToken(text, required)) text = (text + "\n\n" + required).trim();
   const variant = { title: supplied.title || plan.title, description: text, caption: text, hashtags: [...new Set([...(supplied.hashtags || []), ...rules.required_hashtags])], keywords: [], opening_hook: plan.hook || "", call_to_action: "", score: 0, reasoning: "User-written metadata formatted locally. Not AI generated, optimized, or scored." };
   const metadata = Object.fromEntries(PLATFORMS.map(platform => [platform, { recommended_index: 0, variants: [structuredClone(variant), structuredClone(variant), structuredClone(variant)] }]));
   return validateMetadata(metadata);
@@ -139,6 +165,7 @@ export function validateMetadata(metadata: BrowserRow): BrowserRow {
 }
 
 export function compliance(plan: BrowserRow, metadata: BrowserRow, rules: BrowserRow, media: BrowserRow, rights: boolean, semanticEvidence: BrowserRow = {}, draftApproved = false): BrowserRow {
+  rules=validateRules(rules);
   const checks: BrowserRow[] = [];
   function add(rule: string, state: string, detail: string) { checks.push({ rule, status: state, detail, blocking: state !== "PASS" }); }
   function review(rule: string, detail: string) { const evidence = semanticEvidence[rule]; if (evidence?.confirmed && typeof evidence.note === "string" && evidence.note.trim().length >= 8 && evidence.reviewed_at) add(rule, "PASS", "Human-reviewed evidence: " + evidence.note); else add(rule, "REVIEW_REQUIRED", detail); }
@@ -146,13 +173,13 @@ export function compliance(plan: BrowserRow, metadata: BrowserRow, rules: Browse
   const duration = media.duration;
   if (!Number.isFinite(duration) || duration <= 0) add('duration', 'REVIEW_REQUIRED', 'A valid measured output duration is required.');
   else add("duration", rules.min_duration != null && duration < rules.min_duration - .05 || rules.max_duration != null && duration > rules.max_duration + .05 ? "FAIL" : "PASS", `Rendered duration: ${duration.toFixed(2)} seconds. Compare with the reviewed campaign bounds.`);
-  add("video_format", media.width === 1080 && media.height === 1920 && media.decode_verified && media.codec === "h264" && media.has_audio ? "PASS" : "FAIL", "Actual local encode, metadata probe, and complete decode must confirm vertical H.264 video with audio.");
+  add("video_format", media.width === (plan.output_width||1080) && media.height === (plan.output_height||1920) && media.decode_verified && media.codec === "h264" && media.has_audio ? "PASS" : "FAIL", "Actual local encode, metadata probe, and complete decode must confirm the selected vertical H.264 output with audio.");
   if (plan.subtitles_enabled && plan.transcript_excerpt) add("subtitle_sync", media.subtitle_synchronized ? "PASS" : "FAIL", "Uploaded cue timestamps are mapped through the selected scenes. Word alignment is not inferred.");
   if (rules.allowed_platforms.length) add("platforms", "PASS", "Supplied permitted platforms: " + rules.allowed_platforms.join(", ")); else review("platforms", "The brief does not establish allowed platforms.");
   for (const platform of rules.allowed_platforms.length ? rules.allowed_platforms : PLATFORMS) {
     const selected = metadata[platform].variants[metadata[platform].recommended_index];
     const text = [selected.title, selected.description, selected.caption, ...selected.hashtags].join(" ");
-    const missing = [...rules.required_hashtags, ...rules.required_mentions, ...rules.required_disclosures].filter(value => !containsRequiredToken(text, value));
+    const missing = [...rules.required_hashtags, ...rules.required_mentions, ...rules.required_disclosures,...rules.required_links].filter(value => !containsRequiredToken(text, value));
     add(`metadata_${platform}`, missing.length ? "FAIL" : "PASS", missing.length ? "Missing required campaign text: " + missing.join(", ") : "Selected metadata includes the supplied mandatory text.");
   }
   for (const [field, rule] of [["required_branding", "branding"], ["prohibited_content", "content_restrictions"], ["audio_restrictions", "audio_restrictions"], ["permitted_source_material", "source_material"]]) if (rules[field].length) review(rule, "Review the actual video against: " + rules[field].join("; "));
@@ -164,6 +191,14 @@ export function compliance(plan: BrowserRow, metadata: BrowserRow, rules: Browse
   if (rules.contradictions.length) review("campaign_contradictions", rules.contradictions.join("; "));
   if (!rules.evidence.length) review("campaign_evidence", "Review the original campaign requirements and retain evidence.");
   if (!rules.prohibited_content.length) review("content_restrictions", "Review context and framing in the actual rendered video; no AI semantic analysis was performed.");
+  if(plan.generation_method==='local_assisted')review('creative_context','Confirm that edited shot order, overlays, and publishing suggestions accurately represent the actual footage. Local measurements do not establish meaning.');
+  if(rules.automated_clipping_allowed===false||rules.ai_generated_allowed===false)review('manual_editing','The campaign restricts automation. Verify the required human creative decisions and campaign-specific conditions; an app-generated storyboard does not establish eligibility.');
+  if(rules.original_footage_required===true)review('original_footage','Verify the required original creator footage and ownership evidence in the actual final video.');
+  if(rules.music_allowed===false&&plan.audio_treatment!=='mute')review('music_restrictions','Verify that retained source audio does not include prohibited music.');
+  if(rules.ai_voice_allowed===false)review('ai_voice_restrictions','No AI voice is added by this editor. Verify that the original source audio also satisfies the campaign restriction.');
+  if(rules.paid_promotion_allowed===false)review('paid_promotion','Verify the proposed use, promotion, and disclosures against the original campaign terms.');
+  if(rules.prohibited_footage.length)review('prohibited_footage',rules.prohibited_footage.join('; '));
+  if(rules.audience_restrictions.length)review('audience_restrictions',rules.audience_restrictions.join('; '));
   const state = checks.some(check => check.status === "FAIL") ? "FAIL" : checks.some(check => check.status === "REVIEW_REQUIRED") ? "REVIEW_REQUIRED" : "PASS";
   return { status: state, publish_ready: state === "PASS", checks, rules_snapshot: rules, semantic_evidence: semanticEvidence };
 }

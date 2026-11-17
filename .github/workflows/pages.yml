@@ -36,6 +36,9 @@ jobs:
           NEXT_PUBLIC_BROWSER_MODE: 'true'
           NEXT_PUBLIC_BASE_PATH: /ai-clip-factory
         run: npm run build:pages
+      - name: Verify browser rules, creative engine, and real WASM rendering
+        working-directory: frontend
+        run: node --test scripts/test-browser.mjs scripts/test-browser-api.mjs scripts/test-creative.mjs scripts/test-wasm.mjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/out

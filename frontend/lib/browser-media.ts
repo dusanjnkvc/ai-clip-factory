@@ -87,72 +87,118 @@ function assTime(seconds: number): string {
 }
 function assText(value: string): string { return value.replace(/\\/g, "\\\\").replace(/{/g, "\\{").replace(/}/g, "\\}").replace(/\r?\n/g, "\\N").replace(/[\x00-\x08\x0b-\x1f]/g, ""); }
 
-function captionsAss(plan: BrowserRow, cues: CaptionCue[]): { text: string; count: number } {
-  const size = ({ clean: 62, bold: 74, podcast: 66, gaming: 58, karaoke: 68 } as BrowserRow)[plan.subtitle_style] || 62;
-  let text = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Caption,Noto Sans,${size},&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,${plan.subtitle_style === "clean" ? 0 : -1},0,0,0,100,100,0,0,1,3,1,2,75,75,260,1\nStyle: Hook,Noto Sans,70,&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,8,70,70,220,1\n\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n`;
-  let offset = 0, count = 0;
-  if (plan.subtitles_enabled) for (const scene of plan.scenes) {
-    for (const cue of cues) {
-      const start = Math.max(cue.start, scene.start), end = Math.min(cue.end, scene.end);
-      if (end > start) { text += `Dialogue: 0,${assTime(offset + start - scene.start)},${assTime(offset + end - scene.start)},Caption,,0,0,0,,${assText(cue.text)}\n`; count++; }
+type SourceFile = {blob:Blob;cues:CaptionCue[]};
+function assColor(value: string): string {
+  const hex=/^#[0-9a-f]{6}$/i.test(value)?value.slice(1):'FFFFFF';
+  return '&H00'+hex.slice(4,6)+hex.slice(2,4)+hex.slice(0,2);
+}
+function captionAnimation(kind:string,x:number,y:number):string {
+  if(kind==='fade')return '{\\fad(90,90)}';
+  if(kind==='pop')return '{\\fscx92\\fscy92\\t(0,110,\\fscx100\\fscy100)}';
+  if(kind==='slide')return `{\\move(${x},${y+18},${x},${y},0,130)}`;
+  return '';
+}
+function captionsAss(plan:BrowserRow,defaultCues:CaptionCue[],sources:Record<string,SourceFile>,width:number,height:number):{text:string;count:number} {
+  const settings=plan.caption_settings||{};const ratio=width/1080;
+  const base=({clean:62,bold:74,podcast:66,gaming:58,karaoke:68} as BrowserRow)[plan.subtitle_style]||62;
+  const size=Math.round((settings.font_size||base)*ratio),top=Math.round((settings.safe_top||220)*ratio),bottom=Math.round((settings.safe_bottom||260)*ratio);
+  const alignment=settings.position==='upper'?8:settings.position==='center'?5:2;
+  const y=alignment===8?top:alignment===5?height/2:height-bottom;
+  let text=`[Script Info]\nScriptType: v4.00+\nPlayResX: ${width}\nPlayResY: ${height}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Caption,Noto Sans,${size},${assColor(settings.color||'#FFFFFF')},${assColor(settings.highlight||'#B6A7FA')},&H00101010,&H80000000,${plan.subtitle_style==='clean'?0:-1},0,0,0,100,100,0,0,1,${Math.max(2,Math.round(3*ratio))},1,${alignment},${Math.round(75*ratio)},${Math.round(75*ratio)},${alignment===8?top:bottom},1\nStyle: Hook,Noto Sans,${Math.round(70*ratio)},&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,8,${Math.round(70*ratio)},${Math.round(70*ratio)},${top},1\nStyle: Label,Noto Sans,${Math.round(50*ratio)},&H00FFFFFF,&H00FFFFFF,&H00101010,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,8,${Math.round(70*ratio)},${Math.round(70*ratio)},${top},1\n\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n`;
+  let offset=0,count=0;
+  for(const scene of plan.scenes){
+    const cues=sources[scene.source_id||plan.source_id]?.cues||defaultCues;
+    if(plan.subtitles_enabled&&settings.enabled!==false)for(const cue of cues){
+      const start=Math.max(cue.start,scene.start),end=Math.min(cue.end,scene.end);
+      if(end>start){text+=`Dialogue: 0,${assTime(offset+start-scene.start)},${assTime(offset+end-scene.start)},Caption,,0,0,0,,${captionAnimation(settings.animation||'none',Math.round(width/2),Math.round(y))}${assText(cue.text)}\n`;count++;}
     }
-    offset += scene.end - scene.start;
+    if(scene.overlay_text){
+      const placement=scene.overlay_position==='bottom'?`{\\an2\\pos(${Math.round(width/2)},${height-bottom})}`:'';
+      text+=`Dialogue: 1,${assTime(offset)},${assTime(offset+Math.min(scene.end-scene.start,4))},Label,,0,0,0,,${placement}${assText(scene.overlay_text)}\n`;
+    }
+    offset+=scene.end-scene.start;
   }
-  if (plan.show_hook && plan.hook) text += `Dialogue: 1,0:00:00.00,${assTime(Math.min(2.5, plan.scenes.reduce((total: number, scene: BrowserRow) => total + scene.end - scene.start, 0)))},Hook,,0,0,0,,${assText(plan.hook)}\n`;
-  return { text, count };
+  if(count>3000)throw new Error('Too many overlapping caption cues for one short export. Simplify the supplied subtitle file.');
+  if(plan.show_hook&&plan.hook)text+=`Dialogue: 2,0:00:00.00,${assTime(Math.min(2.5,offset))},Hook,,0,0,0,,${assText(plan.hook)}\n`;
+  return {text,count};
+}
+function cropChain(info:BrowserRow,w:number,h:number,scene:BrowserRow):string {
+  const cw=Math.max(2,Math.floor(Math.min(info.width,info.height*w/h)/(scene.zoom||1)/2)*2);
+  const ch=Math.max(2,Math.min(info.height,Math.floor(cw*h/w/2)*2));
+  const x0=Number(scene.crop_x??.5),y0=Number(scene.crop_y??.5),x1=Number(scene.crop_x_end??x0),y1=Number(scene.crop_y_end??y0);
+  const duration=(scene.end-scene.start).toFixed(4);
+  const x=`'(in_w-out_w)*(${x0}+(${x1-x0})*min(t/${duration},1))'`;
+  const y=`'(in_h-out_h)*(${y0}+(${y1-y0})*min(t/${duration},1))'`;
+  return `crop=${cw}:${ch}:${x}:${y},scale=${w}:${h}:flags=bilinear,setsar=1`;
 }
 
-export async function renderBrowserClip(source: Blob, plan: BrowserRow, cues: CaptionCue[], mode: string, onProgress: (stage: string, percent: number) => Promise<void>): Promise<{ blob: Blob; media_info: BrowserRow }> {
-  await onProgress("Loading the local browser FFmpeg engine", 5);
-  const engine = await ffmpeg();
-  const prefix = "job-" + crypto.randomUUID();
-  const input = `${prefix}-source`, output = `${prefix}-render.mp4`, captionFile = `${prefix}-captions.ass`, inputProbe = `${prefix}-input.json`, outputProbe = `${prefix}-output.json`;
-  const files = [input, output, captionFile, inputProbe, outputProbe];
-  logs.length = 0;
-  try {
-    const bytes = new Uint8Array(await source.arrayBuffer()); const options = inputOptions(bytes);
-    await onProgress("Reading local source media", 10);
-    await engine.writeFile(input, bytes);
-    const info = await probe(engine, input, options, inputProbe);
-    if (plan.scenes.some((scene: BrowserRow) => scene.end > info.duration + .05)) throw new Error("The selected timeline extends beyond the source video.");
-    const captions = captionsAss(plan, cues);
-    await engine.writeFile(captionFile, new TextEncoder().encode(captions.text));
-    expectedSeconds = plan.scenes.reduce((total: number, scene: BrowserRow) => total + scene.end - scene.start, 0);
-    const graph: string[] = [], concat: string[] = [];
-    for (const [index, scene] of plan.scenes.entries()) {
-      const cropWidth = Math.max(2, Math.floor(Math.min(info.width, info.height * 9 / 16) / scene.zoom / 2) * 2);
-      const cropHeight = Math.max(2, Math.min(info.height, Math.floor(cropWidth * 16 / 9 / 2) * 2));
-      const x = Math.max(0, Math.min(info.width - cropWidth, Math.round((info.width - cropWidth) * scene.crop_x)));
-      const y = Math.max(0, Math.min(info.height - cropHeight, Math.round((info.height - cropHeight) * scene.crop_y)));
-      graph.push(`[0:v]trim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},setpts=PTS-STARTPTS,crop=${cropWidth}:${cropHeight}:${x}:${y},scale=1080:1920:flags=bilinear,setsar=1,fps=30[v${index}]`);
-      if (info.has_audio) graph.push(`[0:a]atrim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`);
-      else graph.push(`anullsrc=r=48000:cl=stereo:d=${(scene.end - scene.start).toFixed(4)}[a${index}]`);
+export async function renderBrowserClip(source:Blob,plan:BrowserRow,cues:CaptionCue[],mode:string,onProgress:(stage:string,percent:number)=>Promise<void>,sourceFiles:Record<string,SourceFile>={}):Promise<{blob:Blob;media_info:BrowserRow}>{
+  await onProgress('Loading the local browser FFmpeg engine',5);
+  const engine=await ffmpeg(),prefix='job-'+crypto.randomUUID(),files:string[]=[];
+  const output=prefix+'-render.mp4',captionFile=prefix+'-captions.ass',outputProbe=prefix+'-output.json';
+  files.push(output,captionFile,outputProbe);logs.length=0;
+  const mainId=plan.source_id||'__main__';
+  const sources:Record<string,SourceFile>={[mainId]:{blob:source,cues},...sourceFiles};
+  const ids=[...new Set<string>([mainId,...plan.scenes.map((scene:BrowserRow)=>scene.source_id||mainId),...plan.scenes.filter((scene:BrowserRow)=>scene.secondary_source_id).map((scene:BrowserRow)=>scene.secondary_source_id)])];
+  const width=plan.output_width||1080,height=plan.output_height||1920;
+  if(![[1080,1920],[720,1280],[540,960]].some(([w,h])=>w===width&&h===height))throw new Error('Unsupported vertical output dimensions.');
+  const inputs:BrowserRow={},inputArgs:string[]=[];
+  try{
+    if(ids.length>5)throw new Error('One browser export supports up to five authorized source files.');
+    if(ids.reduce((sum,id)=>sum+(sources[id]?.blob.size||0),0)>250*1024*1024)throw new Error('The selected sources exceed the 250 MB combined browser-render allowance. Use shorter source files.');
+    for(const [index,id] of ids.entries()){
+      if(!sources[id])throw new Error('A storyboard source is missing. Add its authorized footage before rendering.');
+      const bytes=new Uint8Array(await sources[id].blob.arrayBuffer()),options=inputOptions(bytes);
+      const input=`${prefix}-source-${index}`,probeFile=`${prefix}-probe-${index}.json`;files.push(input,probeFile);
+      await engine.writeFile(input,bytes);const info=await probe(engine,input,options,probeFile);
+      inputs[id]={index,info};inputArgs.push(...options,'-i',input);
+    }
+    await onProgress('Building the validated source timeline',15);
+    const captions=captionsAss(plan,cues,sources,width,height);await engine.writeFile(captionFile,new TextEncoder().encode(captions.text));
+    expectedSeconds=plan.scenes.reduce((total:number,scene:BrowserRow)=>total+scene.end-scene.start,0);
+    const graph:string[]=[],concat:string[]=[];
+    for(const [index,scene] of plan.scenes.entries()){
+      const selected=inputs[scene.source_id||mainId],duration=scene.end-scene.start;
+      if(!selected||scene.start<0||scene.end>selected.info.duration+.05)throw new Error('A storyboard scene extends beyond its source video.');
+      const raw=`raw${index}`;
+      graph.push(`[${selected.index}:v]trim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},setpts=PTS-STARTPTS,fps=30[${raw}]`);
+      let composed=`compose${index}`;
+      if(scene.composition==='split'){
+        const secondary=inputs[scene.secondary_source_id],start=Number(scene.secondary_start||0);
+        if(!secondary||start<0||start+duration>secondary.info.duration+.05)throw new Error('Split-screen footage is missing or too short.');
+        graph.push(`[${raw}]${cropChain(selected.info,width,height/2,scene)}[top${index}]`);
+        graph.push(`[${secondary.index}:v]trim=start=${start.toFixed(4)}:end=${(start+duration).toFixed(4)},setpts=PTS-STARTPTS,fps=30,${cropChain(secondary.info,width,height/2,{...scene,crop_x:.5,crop_y:.5,crop_x_end:.5,crop_y_end:.5,zoom:1})}[bottom${index}]`);
+        graph.push(`[top${index}][bottom${index}]vstack=inputs=2[${composed}]`);
+      }else if(scene.composition==='fit_blur'){
+        graph.push(`[${raw}]split=2[bg${index}][fg${index}]`);
+        graph.push(`[bg${index}]${cropChain(selected.info,width,height,{...scene,crop_x:.5,crop_y:.5,zoom:1})},boxblur=20:2[blur${index}]`);
+        graph.push(`[fg${index}]scale=w='min(iw,${width})':h='min(ih,${height})':force_original_aspect_ratio=decrease:flags=bilinear,setsar=1[fit${index}]`);
+        graph.push(`[blur${index}][fit${index}]overlay=(W-w)/2:(H-h)/2[${composed}]`);
+      }else graph.push(`[${raw}]${cropChain(selected.info,width,height,scene)}[${composed}]`);
+      const polish:string[]=[];
+      if(scene.effect==='contrast')polish.push('eq=contrast=1.06:saturation=1.07');
+      if(scene.effect==='retro')polish.push('eq=contrast=1.1:saturation=0.72','noise=alls=2:allf=t');
+      if(scene.transition==='fade'&&duration>.5){const fade=Math.min(.14,duration/5);polish.push(`fade=t=in:st=0:d=${fade.toFixed(3)}`,`fade=t=out:st=${(duration-fade).toFixed(3)}:d=${fade.toFixed(3)}`);}
+      graph.push(`[${composed}]${polish.length?polish.join(','):'null'}[v${index}]`);
+      if(selected.info.has_audio&&plan.audio_treatment!=='mute')graph.push(`[${selected.index}:a]atrim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`);
+      else graph.push(`anullsrc=r=48000:cl=stereo:d=${duration.toFixed(4)}[a${index}]`);
       concat.push(`[v${index}][a${index}]`);
     }
-    graph.push(concat.join("") + `concat=n=${plan.scenes.length}:v=1:a=1[video][audio]`);
+    graph.push(concat.join('')+`concat=n=${plan.scenes.length}:v=1:a=1[video][audio]`);
     graph.push(`[video]ass=filename=${captionFile}:fontsdir=.[outv]`);
-    graph.push("[audio]loudnorm=I=-16:TP=-1.5:LRA=11[outa]");
-    let lastPercent = 20;
-    currentProgress = value => { const percent = 20 + Math.floor(value * 65); if (percent > lastPercent) { lastPercent = percent; void onProgress("Encoding your local vertical clip", percent); } };
-    await onProgress("Encoding your local vertical clip", 20);
-    const exit = await withDeadline(engine.exec(["-hide_banner", "-v", "error", ...options, "-i", input, "-filter_complex_threads", "1", "-filter_complex", graph.join(";"), "-map", "[outv]", "-map", "[outa]", "-c:v", "libx264", "-preset", mode === "quality" ? "fast" : "ultrafast", "-crf", mode === "quality" ? "21" : "24", "-pix_fmt", "yuv420p", "-threads", "1", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", output], 1200000), 1260000);
-    currentProgress = undefined;
-    if (exit !== 0) throw new Error("FFmpeg could not encode this clip. " + logs.slice(-4).join(" "));
-    await onProgress("Checking actual output dimensions and playback", 88);
-    const rendered = await probe(engine, output, ["-protocol_whitelist", "file,pipe", "-f", "mov"], outputProbe);
-    if (rendered.width !== 1080 || rendered.height !== 1920 || rendered.codec !== "h264" || !rendered.has_audio || Math.abs(rendered.duration - expectedSeconds) > .3) throw new Error("The rendered file failed its resolution, duration, codec, or audio check.");
-    const decoded = await withDeadline(engine.exec(["-v", "error", "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", output, "-f", "null", "-"], 300000), 330000);
-    if (decoded !== 0) throw new Error("The rendered file failed a complete playback decode.");
-    const encoded = await engine.readFile(output);
-    if (!(encoded instanceof Uint8Array) || encoded.length < 1000) throw new Error("FFmpeg returned an incomplete MP4.");
-    const blob = new Blob([encoded.slice().buffer as ArrayBuffer], { type: "video/mp4" });
-    return { blob, media_info: { ...rendered, decode_verified: true, subtitle_synchronized: true, subtitle_timing: captions.count ? "cue" : "none", subtitle_words: 0, subtitle_phrases: captions.count, source_had_audio: info.has_audio, size_bytes: blob.size, renderer: "ffmpeg_wasm_single_thread" } };
-  } catch (failure) {
-    // Retain source media in IndexedDB; clear any damaged renderer state.
-    engine.terminate(); instance = undefined;
-    throw failure instanceof Error ? failure : new Error(String(failure));
-  } finally {
-    currentProgress = undefined;
-    if (engine.loaded) for (const file of files) try { await engine.deleteFile(file); } catch { /* Failed files may not have been created. */ }
-  }
+    graph.push('[audio]loudnorm=I=-16:TP=-1.5:LRA=11[outa]');
+    let lastPercent=20;currentProgress=value=>{const percent=20+Math.floor(value*65);if(percent>lastPercent){lastPercent=percent;void onProgress('Encoding the selected storyboard',percent);}};
+    await onProgress('Encoding the selected storyboard',20);
+    const exit=await withDeadline(engine.exec(['-hide_banner','-v','error',...inputArgs,'-filter_complex_threads','1','-filter_complex',graph.join(';'),'-map','[outv]','-map','[outa]','-c:v','libx264','-preset',mode==='quality'?'fast':'ultrafast','-crf',mode==='quality'?'21':'24','-pix_fmt','yuv420p','-threads','1','-c:a','aac','-b:a','128k','-ar','48000','-movflags','+faststart',output],1200000),1260000);
+    currentProgress=undefined;if(exit!==0)throw new Error('FFmpeg could not encode this storyboard. '+logs.slice(-5).join(' '));
+    await onProgress('Checking actual dimensions and full playback decode',88);
+    const rendered=await probe(engine,output,['-protocol_whitelist','file,pipe','-f','mov'],outputProbe);
+    if(rendered.width!==width||rendered.height!==height||rendered.codec!=='h264'||!rendered.has_audio||Math.abs(rendered.duration-expectedSeconds)>.3)throw new Error('The output failed its resolution, duration, codec, or audio validation.');
+    const decoded=await withDeadline(engine.exec(['-v','error','-protocol_whitelist','file,pipe','-f','mov','-i',output,'-f','null','-'],300000),330000);
+    if(decoded!==0)throw new Error('The rendered storyboard failed its complete playback decode.');
+    const encoded=await engine.readFile(output);if(!(encoded instanceof Uint8Array)||encoded.length<1000)throw new Error('FFmpeg returned an incomplete MP4.');
+    const blob=new Blob([encoded.slice().buffer as ArrayBuffer],{type:'video/mp4'});
+    return {blob,media_info:{...rendered,decode_verified:true,subtitle_synchronized:true,subtitle_timing:captions.count?'cue':'none',subtitle_words:0,subtitle_phrases:captions.count,source_had_audio:inputs[mainId].info.has_audio,source_count:ids.length,size_bytes:blob.size,renderer:'ffmpeg_wasm_single_thread'}};
+  }catch(failure){engine.terminate();instance=undefined;throw failure instanceof Error?failure:new Error(String(failure));}
+  finally{currentProgress=undefined;if(engine.loaded)for(const file of files)try{await engine.deleteFile(file);}catch{/* Failed files may not exist. */}}
 }

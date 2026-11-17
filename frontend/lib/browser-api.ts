@@ -86,15 +86,40 @@ async function updateJob(id: string, changes: BrowserRow): Promise<BrowserRow> {
   });
 }
 
+// Validate what will actually be encoded, including settings changed in the editor.
+async function creativePreflight(plan: BrowserRow, sources: BrowserRow[], rules: BrowserRow) {
+  if (!plan.creative_concept) return;
+  const { validateConcept } = await import('./creative/index');
+  const concept = {
+    ...plan.creative_concept, shots: plan.scenes,
+    output_width: plan.output_width, output_height: plan.output_height,
+    caption_settings: plan.caption_settings,
+    audio_treatment: plan.audio_treatment,
+    manual_decisions: String(plan.manual_decisions || plan.creative_concept.manual_decisions || ''),
+  };
+  const result = validateConcept(concept, sources as any, validateRules(rules));
+  if (!result.render_allowed) throw new Error(result.checks.filter(check => check.blocking && check.status !== 'PASS').map(check => check.detail).join(' ') || 'Resolve the storyboard requirements before rendering.');
+  plan.creative_concept = concept;
+  return result;
+}
+
 async function renderJob(job: BrowserRow): Promise<void> {
   const started = performance.now();
   try {
     const source = await required("sources", job.source_id), campaign = await required("campaigns", job.campaign_id);
     const captions = await getRecord("subtitles", source.id);
     const cues: CaptionCue[] = captions?.cues || [];
-    const plan = job.payload.plan ? validatePlan(job.payload.plan, source.media_info.duration) : manualPlan(job.payload.manual_selection, source, job.rules_snapshot, cues);
+    const available=await listRecords('sources');
+    const durations=Object.fromEntries(available.map(item=>[item.id,item.media_info.duration]));
+    const plan = job.payload.plan ? validatePlan(job.payload.plan, source.media_info.duration,durations) : manualPlan(job.payload.manual_selection, source, job.rules_snapshot, cues);
+    await creativePreflight(plan, available, job.rules_snapshot);
+    const sourceFiles: Record<string,{blob:Blob;cues:CaptionCue[]}>={};
+    for(const id of new Set<string>([source.id,...plan.scenes.map((scene:BrowserRow)=>scene.source_id||source.id),...plan.scenes.filter((scene:BrowserRow)=>scene.secondary_source_id).map((scene:BrowserRow)=>scene.secondary_source_id)])){
+      const item=await required('sources',id);
+      sourceFiles[id]={blob:await getBlob(item.storage_key),cues:(await getRecord('subtitles',id))?.cues||[]};
+    }
     const metadata = job.payload.metadata || manualMetadata(plan, job.rules_snapshot);
-    const result = await renderBrowserClip(await getBlob(source.storage_key), plan, cues, job.mode, (stage, progress) => updateJob(job.id, { stage, progress }).then(() => undefined));
+    const result = await renderBrowserClip(await getBlob(source.storage_key), {...plan,source_id:source.id}, cues, job.mode, (stage, progress) => updateJob(job.id, { stage, progress }).then(() => undefined),sourceFiles);
     let clip: BrowserRow;
     if (job.payload.clip_id) {
       clip = await required("clips", job.payload.clip_id);
@@ -104,7 +129,7 @@ async function renderJob(job: BrowserRow): Promise<void> {
     const storageKey = `clips/${clip.id}/v${clip.current_version}.mp4`;
     await putBlob(storageKey, result.blob);
     const checks = compliance(plan, metadata, job.rules_snapshot, result.media_info, source.rights_confirmed);
-    clip = { ...clip, job_id: job.id, source_id: source.id, campaign_id: campaign.id, title: plan.title, storage_key: storageKey, media_info: result.media_info, metadata_json: metadata, edit_dna: plan.edit_dna, plan, rules_snapshot: job.rules_snapshot, compliance: checks, status: checks.status === "PASS" ? "ready" : "review", draft_approved: false, generation_method: "manual_local", versions: [...clip.versions, { id: recordId(), version: clip.current_version, created_at: timestamp(), plan, metadata_json: metadata, storage_key: storageKey }] };
+    clip = { ...clip, job_id: job.id, source_id: source.id, campaign_id: campaign.id, title: plan.title, storage_key: storageKey, media_info: result.media_info, metadata_json: metadata, edit_dna: plan.edit_dna, plan, rules_snapshot: job.rules_snapshot, compliance: checks, status: checks.status === "PASS" ? "ready" : "review", draft_approved: false, generation_method: plan.generation_method || "manual_local", versions: [...clip.versions, { id: recordId(), version: clip.current_version, created_at: timestamp(), plan, metadata_json: metadata, storage_key: storageKey }] };
     await setRecord("clips", clip);
     await audit("clip.rendered", clip.id, { renderer: "ffmpeg_wasm_single_thread", version: clip.current_version, compliance: checks.status });
     await updateJob(job.id, { status: "completed", stage: "Clip rendered locally; review the actual video and campaign checks", progress: 100, completed_clips: 1, completed_at: timestamp(), first_clip_seconds: (performance.now() - started) / 1000, error: null });
@@ -133,8 +158,15 @@ async function queueRender(data: BrowserRow): Promise<BrowserRow> {
   const active = (await listRecords("jobs")).find(job => job.source_id === source.id && ["queued", "processing"].includes(job.status));
   if (active) throw new Error("This source already has a queued or active render. Wait for its result before starting another.");
   const subtitle = await getRecord("subtitles", source.id);
-  const plan = data.plan ? validatePlan(data.plan, source.media_info.duration) : manualPlan(data.manual_selection || {}, source, campaign.rules, subtitle?.cues || []);
-  const job = { id: recordId(), created_at: timestamp(), source_id: source.id, campaign_id: campaign.id, campaign_name: campaign.name, mode: data.mode || "fast", clip_count: 1, status: "queued", stage: "Waiting for this tab's local renderer", progress: 0, attempts: 0, completed_clips: 0, cost_reservation: 0, rules_snapshot: structuredClone(data.rules_snapshot || campaign.rules), payload: { manual_selection: data.manual_selection, plan, ...(data.payload || {}) } };
+  const available=await listRecords('sources');
+  const durations=Object.fromEntries(available.map(item=>[item.id,item.media_info.duration]));
+  const plan = data.plan ? validatePlan({...data.plan,source_id:source.id}, source.media_info.duration,durations) : manualPlan(data.manual_selection || {}, source, campaign.rules, subtitle?.cues || []);
+  if(plan.creative_concept){
+    plan.manual_decisions=String(data.director?.manual_decision_note||plan.manual_decisions||plan.creative_concept.manual_decisions||'');
+    await creativePreflight(plan,available,data.rules_snapshot||campaign.rules);
+    if(data.director?.project_id)await required('director_projects',data.director.project_id);
+  }
+  const job = { id: recordId(), created_at: timestamp(), source_id: source.id, campaign_id: campaign.id, campaign_name: campaign.name, director:data.director||null, mode: data.mode || "fast", clip_count: 1, status: "queued", stage: "Waiting for this tab's local renderer", progress: 0, attempts: 0, completed_clips: 0, cost_reservation: 0, rules_snapshot: structuredClone(data.rules_snapshot || campaign.rules), payload: { manual_selection: data.manual_selection, plan, ...(data.payload || {}) } };
   await setRecord("jobs", job);
   await audit("job.queued", job.id, { processing_provider: "browser_manual", cost_reservation: 0 });
   void pumpQueue();
@@ -175,6 +207,19 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     return { ...configuration(), preferences: (await getRecord("settings", "workspace"))?.preferences || {} };
   }
   if (path === "/dashboard") return { metrics: await metrics(), campaigns: (await listRecords("campaigns")).slice(0, 5), clips: await Promise.all((await listRecords("clips")).slice(0, 6).map(clipJson)), recent_jobs: (await listRecords("jobs")).slice(0, 5), configuration: configuration() };
+  if(parts[0]==='director'&&parts[1]==='projects'){
+    if(parts.length===2&&method==='GET')return listRecords('director_projects');
+    if((method==='POST'&&parts.length===2)||(method==='PATCH'&&parts.length===3)){
+      const values=body(options);
+      if(JSON.stringify(values).length>4000000)throw new Error('This storyboard exceeds the local project size limit. Reduce its image samples or shots.');
+      const previous=parts[2]?await required('director_projects',parts[2]):null;
+      const sourceId=values.source_id||previous?.source_id,campaignId=values.campaign_id||previous?.campaign_id;
+      await required('sources',sourceId);await required('campaigns',campaignId);
+      const next={...(previous||{}),...values,id:previous?.id||recordId(),source_id:sourceId,campaign_id:campaignId,created_at:previous?.created_at||timestamp(),updated_at:timestamp()};
+      await setRecord('director_projects',next);await audit('director.project_saved',next.id,{manual_edits_preserved:true});return next;
+    }
+    if(parts.length===3&&method==='GET')return required('director_projects',parts[2]);
+  }
   if (parts[0] === "campaigns") {
     if (parts.length === 1 && method === "GET") return listRecords("campaigns");
     if (parts.length === 1 && method === "POST") {
@@ -209,10 +254,12 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
       if (file.size > SOURCE_LIMIT || !/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)) throw new Error("Browser mode accepts playable MP4/MOV/WebM/Matroska files up to 150 MB.");
       const mediaInfo = await inspectVideo(file), id = recordId(), key = `sources/${id}`;
       await putBlob(key, file);
-      const record = { id, created_at: timestamp(), filename: file.name, storage_key: key, size_bytes: file.size, media_info: mediaInfo, rights_confirmed: true, rights_note: String(data.get("rights_note")), rights_recorded_at: timestamp() };
+      const record = { id, created_at: timestamp(), filename: file.name, storage_key: key, size_bytes: file.size, media_info: mediaInfo, rights_confirmed: true, original_creator:data.get('source_role')==='original_creator', rights_note: String(data.get("rights_note")), rights_recorded_at: timestamp() };
       await setRecord("sources", record); await audit("source.uploaded", id, { rights_note: record.rights_note, size_bytes: file.size }); return record;
     }
     const source = await required("sources", parts[1]);
+    if(parts[2]==='asset'&&method==='GET')return {url:await mediaUrl(source.storage_key)};
+    if(parts[2]==='subtitles'&&method==='GET'){const saved=await getRecord('subtitles',source.id);return {cues:saved?.cues||[],words:[],provider:saved?.provider||'none'};}
     if (parts[2] === "subtitles" && method === "POST") {
       if ((await listRecords("jobs")).some(job => job.source_id === source.id && ["queued", "processing"].includes(job.status))) throw new Error("Wait for the current source render to finish before replacing subtitles.");
       const { file } = uploaded(options); if (file.size > 2 * 1024 * 1024) throw new Error("Subtitle files are limited to 2 MB.");
@@ -239,7 +286,7 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     }
     if (parts[2] === "review" && method === "POST") {
       const values = body(options); if (String(values.note || "").trim().length < 8) throw new Error("A meaningful review evidence note is required.");
-      const allowed = ["branding", "content_restrictions", "audio_restrictions", "source_material", "campaign_uncertainties", "campaign_contradictions", "platforms", "approval_requirement", "disclosures", "campaign_evidence"];
+      const allowed = ["branding", "content_restrictions", "audio_restrictions", "source_material", "campaign_uncertainties", "campaign_contradictions", "platforms", "approval_requirement", "disclosures", "campaign_evidence","creative_context","manual_editing","original_footage","music_restrictions","ai_voice_restrictions","paid_promotion","prohibited_footage","audience_restrictions"];
       const evidence: BrowserRow = {};
       for (const [key, value] of Object.entries(values.evidence || {}) as [string, BrowserRow][]) { if (!allowed.includes(key) || value?.confirmed !== true || String(value?.note || "").trim().length < 8) throw new Error("Each semantic check needs confirmation and at least eight characters of evidence."); evidence[key] = { confirmed: true, note: value.note, reviewed_by: LOCAL_USER.id, reviewed_at: timestamp() }; }
       const source = await required("sources", clip.source_id), result = compliance(clip.plan, clip.metadata_json, clip.rules_snapshot, clip.media_info, source.rights_confirmed, evidence, values.draft_approved === true);
@@ -307,6 +354,9 @@ export async function browserDownload(path: string): Promise<void> {
   const parts = path.replace(/^\/api(?=\/)/, "").split("?")[0].split("/").filter(Boolean);
   if (parts[0] !== "clips") throw new Error("Choose a generated clip to download.");
   const clip = await required("clips", parts[1]);
+  if(clip.plan?.creative_concept){
+    await creativePreflight(clip.plan,await listRecords('sources'),clip.rules_snapshot);
+  }
   let blob: Blob, filename: string;
   if (parts[2] === "package") {
     const video = new Uint8Array(await (await getBlob(clip.storage_key)).arrayBuffer());

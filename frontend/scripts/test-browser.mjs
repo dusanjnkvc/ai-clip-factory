@@ -44,6 +44,31 @@ function evaluate({ rules = campaign(), clip = plan(), metadata = manualMetadata
   return compliance(clip, metadata, rules, media, true, evidence, draftApproved);
 }
 
+test("creative restrictions remain evidence-backed review tasks after a successful render", () => {
+  const rules = campaign({ automated_clipping_allowed: false, ai_voice_allowed: false, paid_promotion_allowed: false, original_footage_required: true });
+  const result = evaluate({ rules, clip: plan({}) });
+  for (const rule of ['manual_editing', 'ai_voice_restrictions', 'paid_promotion', 'original_footage']) assert.equal(check(result, rule).status, 'REVIEW_REQUIRED');
+  assert.equal(result.publish_ready, false);
+});
+
+test("mandatory campaign links survive metadata formatting and are checked in selected text", () => {
+  const rules = campaign({ required_links: ['https://example.com/campaign'] });
+  const clip = plan({}, rules), metadata = manualMetadata(clip, rules);
+  assert.ok(metadata.youtube.variants[0].description.includes(rules.required_links[0]));
+  assert.equal(check(evaluate({ rules, clip, metadata }), 'metadata_youtube').status, 'PASS');
+  metadata.youtube.variants[0].description = ''; metadata.youtube.variants[0].caption = '';
+  assert.equal(check(evaluate({ rules, clip, metadata }), 'metadata_youtube').status, 'FAIL');
+});
+
+test("multi-source shots use their own real duration and split footage bounds", () => {
+  const clip = plan(); clip.source_id = 'main';
+  clip.scenes.push({ ...clip.scenes[0], source_id: 'other', start: 20, end: 23 });
+  assert.doesNotThrow(() => validatePlan(clip, 60, { main: 60, other: 25 }));
+  assert.throws(() => validatePlan(clip, 60, { main: 60, other: 21 }), /source range/);
+  clip.scenes[1] = { ...clip.scenes[1], composition: 'split', secondary_source_id: 'pair', secondary_start: 4 };
+  assert.throws(() => validatePlan(clip, 60, { main: 60, other: 25, pair: 6 }), /Split screen/);
+});
+
 test("labeled extraction retains exact source evidence and leaves unsupported rules unknown", () => {
   const brief = "Platforms: YouTube Shorts, TikTok\nDuration: 12–35 seconds\nHashtags: #owned #ad\nDraft approval: required\nSubmission window: 30 minutes";
   const rules = extractRules(brief, "Authorized campaign");

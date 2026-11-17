@@ -52,7 +52,7 @@ jobs:
       - name: Type check and build
         working-directory: frontend
         run: |
-          node --test scripts/test-browser.mjs
+          node --test scripts/test-browser.mjs scripts/test-browser-api.mjs scripts/test-creative.mjs
           npm run build
 
   containers:
