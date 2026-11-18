@@ -126,6 +126,8 @@ def process_job(job_id):
                 if auto:
                     # Finish inference and release its model before CPU rendering.
                     metadata = service.generate_metadata(plan_row.plan, rules)
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(plan_row, 'plan')
                     db.refresh(job, ['payload'])
                     if job.payload.get('cancel_requested'): service.cancel.set()
                     job.payload = {**job.payload, 'auto_result': service.bundle}

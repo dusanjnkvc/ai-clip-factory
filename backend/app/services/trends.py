@@ -58,16 +58,18 @@ class TrendResearch:
             db.execute("INSERT INTO quota VALUES (?,2) ON CONFLICT(day) DO UPDATE SET requests=requests+2", (day,))
             db.commit()
         try:
-            with httpx.Client(timeout=15, follow_redirects=False, trust_env=False, transport=self.transport) as client:
+            # Google supports this system header; keep keys out of logged URLs.
+            with httpx.Client(timeout=15, follow_redirects=False, trust_env=False, transport=self.transport,
+                              headers={"X-Goog-Api-Key": key}) as client:
                 base = "https://www.googleapis.com/youtube/v3/"
-                search = client.get(base + "search", params={"key": key, "part": "snippet", "type": "video",
+                search = client.get(base + "search", params={"part": "snippet", "type": "video",
                     "q": subject + " gaming shorts", "publishedAfter": (now-timedelta(days=30)).isoformat(), "maxResults": 10})
                 search.raise_for_status()
                 ids = [item.get("id", {}).get("videoId", "") for item in search.json().get("items", [])]
                 ids = list(dict.fromkeys(value for value in ids if re.fullmatch(r"[A-Za-z0-9_-]{11}", value)))[:10]
                 if not ids:
                     return unavailable("The bounded public search returned no usable video IDs.")
-                response = client.get(base + "videos", params={"key": key, "part": "snippet,statistics", "id": ",".join(ids)})
+                response = client.get(base + "videos", params={"part": "snippet,statistics", "id": ",".join(ids)})
                 response.raise_for_status()
                 sources = []
                 for item in response.json().get("items", []):

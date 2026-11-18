@@ -37,14 +37,23 @@ class LocalAutoPipelineService(PipelineService):
         timelines = build_timelines(self.analysis,ranked,rules,provider=self.provider,
                                     intensity=self.options.get('intensity','balanced'),cancel=self.cancel)
         self.bundle={'analysis_identity':self.analysis['cache_identity'],'ranking':ranked,'timelines':timelines}
-        return [timelines['winner_plan']]
+        self.progress('Checking the proposed ending against actual source footage',61)
+        from .local_tail import review_ending
+        plan,checks=review_ending(self.provider,media_info['path'],timelines['winner_plan'],self.analysis,rules)
+        self.bundle['ending_checks']=checks
+        self.bundle['timelines']['winner_plan']=plan
+        return [plan]
 
     def generate_metadata(self, plan, rules):
         if self.analysis is None: self._analyze(self.source_path)
         self.progress('Researching optional public sources',65)
         research=TrendResearch().research(self.options.get('game') or self.analysis['game_or_topic'],self.options.get('platform','youtube'))
         self.progress('Writing and selecting source-grounded metadata locally',69)
-        package=generate_package(self.provider,plan,self.analysis,rules,research,self.options.get('platform','youtube'))
+        metadata_context={**self.analysis,'ending_checks':self.bundle.get('ending_checks',[])}
+        package=generate_package(self.provider,plan,metadata_context,rules,research,self.options.get('platform','youtube'))
+        plan['hook']=package['recommended']['opening_hook']
+        plan['title']=package['recommended']['title']
+        plan['show_hook']=True
         self.bundle.update(research=research,recommended=package['recommended'],platform=package['platform'])
         self.provider.unload()
         return package['metadata']

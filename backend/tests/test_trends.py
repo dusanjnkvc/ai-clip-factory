@@ -13,6 +13,8 @@ def test_public_dates_urls_cache_and_persistent_quota(monkeypatch,tmp_path):
     monkeypatch.setenv('YOUTUBE_DATA_API_KEY','test-only');monkeypatch.setenv('YOUTUBE_RESEARCH_DAILY_REQUEST_LIMIT','2')
     calls=[]
     def reply(request):
+        assert request.headers['X-Goog-Api-Key']=='test-only'
+        assert 'test-only' not in str(request.url)
         calls.append(request.url.path)
         if request.url.path.endswith('/search'): return httpx.Response(200,json={'items':[{'id':{'videoId':'abcdefghijk'}}]})
         return httpx.Response(200,json={'items':[{'id':'abcdefghijk','snippet':{'title':'Actual public title','publishedAt':(datetime.now(timezone.utc)-timedelta(days=1)).isoformat()},'statistics':{'viewCount':'120','likeCount':'6'}}]})

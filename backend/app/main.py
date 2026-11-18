@@ -927,7 +927,8 @@ def auto_result(job_id: str,user: User=Depends(current_user),db: DBSession=Depen
     clip=db.scalar(select(RenderedClip).where(RenderedClip.job_id==job.id,RenderedClip.user_id==user.id))
     if not clip: raise HTTPException(409,'No final video is stored.')
     result=job.payload.get('auto_result',{})
-    return {'clip':clip_json(clip),'recommended':result.get('recommended'), 'research':result.get('research',{}),'platform':result.get('platform','youtube')}
+    return {'clip':clip_json(clip),'recommended':result.get('recommended'), 'research':result.get('research',{}),
+            'ending_checks':result.get('ending_checks',[]),'platform':result.get('platform','youtube')}
 
 
 @app.get('/api/auto/jobs/{job_id}/package')

@@ -1,5 +1,14 @@
 # AI Clip Factory
 
+## Local Ultimate — automatic creation
+
+The native Windows app now has **AUTO CREATE**: local Ollama footage analysis, three candidate edits, one winner, native FFmpeg rendering, and one recommended metadata package. GitHub Pages remains the browser edition; full inference runs on localhost.
+
+From the project folder, run `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1 -Setup` once for free dependencies/models, then `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1`. Use an existing Python3.12 `.venv`, Node, Ollama and `.env` (copy `.env.example` for a new checkout). Open http://localhost:3000. No paid AI key is needed. A public YouTube research key is optional; missing research is explicitly labeled.
+
+See [implementation and actual validation](docs/LOCAL_ULTIMATE.md). Tests using controlled inference are distinct from real local-model acceptance. The tested model override is `qwen3-vl:4b-instruct`; the configurable provider default remains the requested `qwen3-vl:4b`.
+
+
 A free clipping workspace with **no login, paid AI API, or subscription requirement**. The GitHub Pages edition stores your videos and project records in your browser and renders clips there with FFmpeg WebAssembly. It needs no Python server, cloud worker, OpenAI key, or local AI model.
 
 Choose a simple manual clip or use the browser edition's Creative Director to measure source frames and build editable, source-bound concepts. These are local assisted proposals, not semantic AI analysis. Optional supplied SRT/VTT subtitles and user-authored metadata remain the evidence for words and claims. No AI transcription, event detection, or viral prediction is performed. Your existing device, electricity, disk, and internet are still needed. See [implementation status](docs/STATUS.md) for verification and limitations. This project is separate from LogEN.
@@ -19,7 +28,7 @@ No account or API key is required:
 
 ## Creative Director
 
-This section is available in the **browser edition**. The optional Python edition keeps its existing manual clip workflow.
+This section describes the **browser edition**. The native edition also offers AUTO CREATE through the local setup above and retains manual clipping.
 
 1. Import an authorized source through **Create Clips**, and save/review a campaign if the edit is for one. Open **AI Creative Director**, then select that source and campaign.
 2. Choose a preferred duration, pace, audience, style, and output size. Analyze the source and create concepts. Local measurements include up to 24 decoded frame samples, candidate visual changes, brightness/detail, low-confidence crop hints, and bounded audio-level analysis when the browser can decode it. No person, game event, scene meaning, or dialogue is recognized.

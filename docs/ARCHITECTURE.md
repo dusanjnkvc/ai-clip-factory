@@ -1,5 +1,7 @@
 # Architecture
 
+On `codex/local-ultimate`, the native edition additionally supports a loopback-only Ollama provider, sequential CPU speech/vision phases, source-hash/model-bound analysis cache, ranked chronological timelines and bounded model evaluation. The existing worker serializes automatic jobs, stores alternatives internally, renders one winner and exposes one metadata package. Paid/cloud inference remains blocked in free mode. See [Local Ultimate](LOCAL_ULTIMATE.md) for architecture details and actual validation.
+
 The application has a default free browser-hosted edition and an optional native local-server edition. Both use manual review and supplied campaign/subtitle evidence. The browser edition also offers locally measured, assisted editing concepts. Neither pretends to perform semantic AI analysis without a model.
 
 ## Browser edition on GitHub Pages

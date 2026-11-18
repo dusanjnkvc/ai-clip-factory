@@ -1,5 +1,7 @@
 # Free browser hosting and optional local operation
 
+For the native local-AI development branch, follow [Local Ultimate startup and validation](LOCAL_ULTIMATE.md#windows-startup). Full AUTO CREATE runs on localhost with Ollama, a native worker and FFmpeg; it is not hosted by GitHub Pages. Publishing the branch source does not deploy a public AI backend.
+
 ## GitHub Pages edition
 
 The selected hosted edition is a static site. Next.js exports application files; FFmpeg WebAssembly renders on the visitor’s device; IndexedDB stores the visitor’s local records/media. GitHub Pages does not run Python, PostgreSQL, FFmpeg CPU workers, OAuth secrets, or a media-upload server.
