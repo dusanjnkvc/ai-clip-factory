@@ -261,15 +261,15 @@ def campaign_attachment(campaign_id: str,file: UploadFile=File(...),user: User=D
     if len(campaign.attachments) >= 10:
         raise HTTPException(422,'A campaign supports at most 10 attachments.')
     suffix = Path(file.filename or '').suffix.lower()
-    mimes = {'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg'}
+    mimes = {'.pdf':'application/pdf','.txt':'text/plain','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg'}
     if suffix not in mimes:
-        raise HTTPException(422,'Upload a PDF, PNG or JPEG.')
+        raise HTTPException(422,'Upload PDF, TXT, DOCX, PNG or JPEG.')
     with tempfile.TemporaryDirectory(prefix='acf-brief-') as temp:
         path = Path(temp)/('attachment'+suffix)
         size = save_upload(file,path,20*1024*1024)
         with path.open('rb') as attached:
             magic = attached.read(8)
-        if not ((suffix=='.pdf' and magic.startswith(b'%PDF')) or (suffix=='.png' and magic.startswith(b'\x89PNG\r\n\x1a\n')) or (suffix in {'.jpg','.jpeg'} and magic.startswith(b'\xff\xd8\xff'))):
+        if not ((suffix=='.txt' and b'\x00' not in magic) or (suffix=='.docx' and magic.startswith(b'PK')) or (suffix=='.pdf' and magic.startswith(b'%PDF')) or (suffix=='.png' and magic.startswith(b'\x89PNG\r\n\x1a\n')) or (suffix in {'.jpg','.jpeg'} and magic.startswith(b'\xff\xd8\xff'))):
             raise HTTPException(422,'File content does not match its extension.')
         key = f'{user.id}/campaigns/{campaign.id}/{uid()}{suffix}'
         put_file(path,key)

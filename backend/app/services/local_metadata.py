@@ -92,7 +92,8 @@ def generate_package(provider, plan, analysis, rules, research, platform="youtub
         for field in ("description","caption"):
             for text in required:
                 if text not in variant[field]: variant[field] = (variant[field]+"\n\n"+text).strip()
-        variants.append(MetadataVariant.model_validate(variant).model_dump())
+        from .campaign_requirements import enforce_metadata
+        variants.append(MetadataVariant.model_validate(enforce_metadata(variant, campaign)).model_dump())
     selected = max(range(3), key=lambda index: variants[index]["score"])
     metadata = Metadata.model_validate({p:{"variants":copy.deepcopy(variants),"recommended_index":selected}
                                         for p in ["youtube","tiktok","instagram"]}).model_dump()

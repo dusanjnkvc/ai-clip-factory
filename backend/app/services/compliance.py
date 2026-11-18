@@ -65,6 +65,24 @@ def check_compliance(
             if value.casefold() not in text.casefold():
                 missing.append(value)
         add(f"metadata_{platform}", "FAIL" if missing else "PASS", "Missing required campaign text: " + ", ".join(missing) if missing else "The recommended metadata includes all supplied required tags, mentions, and disclosure text.")
+        from .campaign_requirements import ordered_hashtags
+        tags = ordered_hashtags(campaign.required_hashtags, [])
+        order_ok = chosen.hashtags[:len(tags)] == tags
+        for value in (chosen.description, chosen.caption):
+            embedded = re.findall(r'(?<!\w)#[\w]+', value)
+            if embedded and tags and embedded[:len(tags)] != tags:
+                order_ok = False
+        add(f'hashtag_order_{platform}', 'PASS' if order_ok else 'FAIL', 'Mandatory hashtags must retain exact spelling/order before optional hashtags.')
+        wording_ok = (not campaign.required_title or chosen.title == campaign.required_title) and all(p in chosen.title for p in campaign.required_title_phrases) and all(p in chosen.description for p in campaign.required_description_phrases)
+        add(f'wording_{platform}', 'PASS' if wording_ok else 'FAIL', 'Required title and description wording must be preserved exactly.')
+        if platform in campaign.prohibited_platforms:
+            add(f'prohibited_platform_{platform}', 'FAIL', 'This publishing platform is prohibited by the campaign.')
+
+    if campaign.required_on_video_text:
+        semantic('on_video_text', 'Verify exact visible wording and readability in the rendered video: ' + '; '.join(campaign.required_on_video_text))
+    for field in ('resolution_requirements', 'logo_requirements', 'other_requirements'):
+        if getattr(campaign, field):
+            semantic(field, 'Verify the original requirement against the actual output: ' + '; '.join(getattr(campaign, field)))
 
     if campaign.required_branding:
         semantic("branding", "Verify the required branding in the actual rendered video: " + "; ".join(campaign.required_branding))

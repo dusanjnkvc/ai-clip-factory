@@ -35,6 +35,16 @@ class CampaignRules(Model):
     prohibited_content: list[str] = Field(default_factory=list)
     audio_restrictions: list[str] = Field(default_factory=list)
     required_links: list[str] = Field(default_factory=list)
+    game_name: str | None = None
+    brand: str | None = None
+    required_title: str | None = None
+    required_title_phrases: list[str] = Field(default_factory=list)
+    required_description_phrases: list[str] = Field(default_factory=list)
+    required_on_video_text: list[str] = Field(default_factory=list)
+    prohibited_platforms: list[Literal["youtube", "tiktok", "instagram"]] = Field(default_factory=list)
+    resolution_requirements: list[str] = Field(default_factory=list)
+    logo_requirements: list[str] = Field(default_factory=list)
+    other_requirements: list[str] = Field(default_factory=list)
     prohibited_footage: list[str] = Field(default_factory=list)
     audience_restrictions: list[str] = Field(default_factory=list)
     automated_clipping_allowed: bool | None = None

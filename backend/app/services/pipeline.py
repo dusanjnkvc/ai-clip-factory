@@ -224,6 +224,8 @@ class PipelineService:
                     missing = [text for text in required_text + required_tags if not re.search(r"(?<!\w)" + re.escape(text) + r"(?!\w)", variant[field], re.IGNORECASE)]
                     if missing:
                         variant[field] = (variant[field].rstrip() + "\n\n" + " ".join(missing)).strip()
+                from .campaign_requirements import enforce_metadata
+                variant.update(enforce_metadata(variant, campaign))
         # Validate again after corrections; oversize mandatory text must be reviewed, not truncated.
         try:
             return Metadata.model_validate(data).model_dump()
