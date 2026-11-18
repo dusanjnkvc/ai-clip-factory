@@ -61,3 +61,7 @@ The existing FFmpeg renderer now applies validated numeric crop motion, short sh
 ## Phase 6 — Optional public trend research
 
 Added `trends.py` and two passing contract tests. It uses only the official YouTube search/videos API, bounded recent public results, canonical URLs/dates, actual available metrics, and a daily SQLite cache/request-reservation ledger. API keys remain in environment variables and are not copied into results. A single snapshot is only a research-supported suggestion, never a verified growth/viral claim or proof of TikTok/Reels trends. Missing credentials, quota/errors or cache failures return explicit unavailable status so local metadata can continue. No live API research was claimed: tests use controlled HTTP responses and no research key is configured for acceptance yet.
+
+## Phase 7 — Metadata selection
+
+Added `local_metadata.py` and two passing tests. A structured local-model request creates three internally retained alternatives using only winning-edit frame evidence and selected transcript. Unknown evidence IDs stop selection. Required campaign text/links/tags survive formatting and platform validation. One editorially scored package is recommended; the source hook remains the visible opening. No retention/view guarantees are made. Missing research is explicitly classified as generally relevant local content. Tests use a controlled provider; real model metadata is pending end-to-end acceptance.
