@@ -57,3 +57,7 @@ All166 backend tests passed, including14 timeline tests. The actual saved first-
 ## Phase 5 — Native rendering enhancements (November18)
 
 The existing FFmpeg renderer now applies validated numeric crop motion, short shot fades, contrast/retro treatment and actual mute. It retains source-timed ASS captions and visible opening hook text, output probing and complete decoding. No rendering backend was replaced. Silent audio bypasses loudness normalization because the packaged FFmpeg7.1 produced NaN samples when normalizing silence. All28 relevant renderer/pipeline tests pass, including a real1080×1920 animated encode/decode and measured silent audio. Full user-video autonomous rendering remains an end-to-end acceptance task.
+
+## Phase 6 — Optional public trend research
+
+Added `trends.py` and two passing contract tests. It uses only the official YouTube search/videos API, bounded recent public results, canonical URLs/dates, actual available metrics, and a daily SQLite cache/request-reservation ledger. API keys remain in environment variables and are not copied into results. A single snapshot is only a research-supported suggestion, never a verified growth/viral claim or proof of TikTok/Reels trends. Missing credentials, quota/errors or cache failures return explicit unavailable status so local metadata can continue. No live API research was claimed: tests use controlled HTTP responses and no research key is configured for acceptance yet.
