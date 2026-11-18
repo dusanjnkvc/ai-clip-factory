@@ -292,15 +292,27 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
             crop_h = max(2, min(height, int(crop_h) // 2 * 2))
             crop_x = max(0, min(width - crop_w, int((width - crop_w) * scene.crop_x)))
             crop_y = max(0, min(height - crop_h, int((height - crop_h) * scene.crop_y)))
-            graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920:flags=bicubic,setsar=1,fps=30[v{index}]")
-            if info["has_audio"]:
+            duration = scene.end - scene.start
+            x_end = scene.crop_x if scene.crop_x_end is None else scene.crop_x_end
+            y_end = scene.crop_y if scene.crop_y_end is None else scene.crop_y_end
+            x = f"'(in_w-out_w)*({scene.crop_x:.6f}+({x_end-scene.crop_x:.6f})*min(t/{duration:.6f},1))'"
+            y = f"'(in_h-out_h)*({scene.crop_y:.6f}+({y_end-scene.crop_y:.6f})*min(t/{duration:.6f},1))'"
+            effects = []
+            if scene.effect == "contrast": effects.append("eq=contrast=1.06:saturation=1.07")
+            elif scene.effect == "retro": effects.extend(["eq=contrast=1.1:saturation=0.72", "noise=alls=2:allf=t"])
+            if scene.transition == "fade" and duration > .5:
+                fade = min(.14, duration/5)
+                effects.extend([f"fade=t=in:st=0:d={fade:.4f}", f"fade=t=out:st={duration-fade:.4f}:d={fade:.4f}"])
+            polish = "," + ",".join(effects) if effects else ""
+            graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{x}:{y},scale=1080:1920:flags=bicubic,setsar=1,fps=30{polish}[v{index}]")
+            if info["has_audio"] and plan.audio_treatment != "mute":
                 graph.append(f"[0:a]atrim=start={scene.start:.4f}:end={scene.end:.4f},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}]")
             else:
                 graph.append(f"anullsrc=r=48000:cl=stereo:d={scene.end-scene.start:.4f}[a{index}]")
             concat.extend([f"[v{index}]", f"[a{index}]"])
         graph.append("".join(concat) + f"concat=n={len(plan.scenes)}:v=1:a=1[video][audio]")
         graph.append("[video]ass=filename=captions.ass[outv]")
-        graph.append("[audio]loudnorm=I=-16:TP=-1.5:LRA=11[outa]")
+        graph.append("[audio]" + ("loudnorm=I=-16:TP=-1.5:LRA=11" if info["has_audio"] and plan.audio_treatment != "mute" else "anull") + "[outa]")
         temporary_video = work / "render.mp4"
         args = [ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y", *safe_input_options(source), "-i", str(source), "-filter_complex_threads", "2", "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]", "-c:v", "libx264", "-preset", "veryfast" if mode == "fast" else "medium", "-crf", "22" if mode == "fast" else "19", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", str(temporary_video)]
         run_media(args, cwd=work, timeout=max(600, int(sum(s.end-s.start for s in plan.scenes) * 30)))

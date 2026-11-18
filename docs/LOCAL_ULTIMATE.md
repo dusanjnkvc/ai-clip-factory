@@ -53,3 +53,7 @@ Added `local_timeline.py` and14 tests. Source-bound ranked windows become High-E
 A bounded model evaluation may only score validated candidate IDs; it cannot create a timestamp, introduce source material or select an unavailable plan. Its highest score selects one winner (local ranking breaks ties), with all alternatives kept internally. Missing/invalid model evaluation stops rather than creating a fallback winner.
 
 All166 backend tests passed, including14 timeline tests. The actual saved first-video findings assemble three20-second styles with2,2 and4 purposeful shots. Unit evaluation uses a controlled provider; real winner selection is pending the coordinated end-to-end run. Applying the new render parameters is the next phase; assembly alone is not a rendered-edit acceptance test.
+
+## Phase 5 — Native rendering enhancements (November18)
+
+The existing FFmpeg renderer now applies validated numeric crop motion, short shot fades, contrast/retro treatment and actual mute. It retains source-timed ASS captions and visible opening hook text, output probing and complete decoding. No rendering backend was replaced. Silent audio bypasses loudness normalization because the packaged FFmpeg7.1 produced NaN samples when normalizing silence. All28 relevant renderer/pipeline tests pass, including a real1080×1920 animated encode/decode and measured silent audio. Full user-video autonomous rendering remains an end-to-end acceptance task.
