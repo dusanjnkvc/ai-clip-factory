@@ -65,3 +65,13 @@ Added `trends.py` and two passing contract tests. It uses only the official YouT
 ## Phase 7 — Metadata selection
 
 Added `local_metadata.py` and two passing tests. A structured local-model request creates three internally retained alternatives using only winning-edit frame evidence and selected transcript. Unknown evidence IDs stop selection. Required campaign text/links/tags survive formatting and platform validation. One editorially scored package is recommended; the source hook remains the visible opening. No retention/view guarantees are made. Missing research is explicitly classified as generally relevant local content. Tests use a controlled provider; real model metadata is pending end-to-end acceptance.
+
+## Phase 8 — AUTO CREATE integration
+
+Added a native Auto Create screen, loopback-only job/result/cancel/package endpoints, local orchestration service, and `scripts/local-ai.ps1`. Existing sources, rights checks, SQL queue, candidate/plan/clip/version storage and manual clipping remain available. Automatic jobs render only the selected winner, reserve zero paid budget, and serialize local model phases before rendering. The final screen exposes one recommended title/description/hashtag package, video and package downloads. Cancellation interrupts model/analysis stages; an active native encode stops exposing its result after cancellation rather than promising instantaneous subprocess cancellation.
+
+Two API/worker tests pass using controlled inference plus real FFmpeg output, confirming one export, persistence, zero budget, cancellation, automation prohibition and preserved manual endpoint. The existing171-test suite and native production build passed before these additions; final combined checks and real full-inference/UI acceptance follow.
+
+### Windows startup
+
+With Python3.12, Node and Ollama installed, create `.venv` and `.env` from `.env.example` if needed. First setup: `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1 -Setup`. Later: `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1`. The launcher uses the explicitly tested4B instruct variant and an isolated loopback11435 server with Vulkan disabled; the provider's requested4b default remains configurable. Downloads are free model/package downloads, not hosted inference. It does not alter the user's11434 server. Open http://localhost:3000 and select AUTO CREATE. Native uploads allow1500MB in this launcher for the supplied4K source; keep enough RAM/disk for upload buffering. GitHub Pages remains browser-only manual/assisted editing.

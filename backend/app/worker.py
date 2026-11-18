@@ -34,21 +34,43 @@ def claim_job():
         # plans and completed clips, so crash recovery does not restart the batch.
         db.execute(update(ProcessingJob).where(ProcessingJob.status == 'processing', ProcessingJob.lease_until < now()).values(status='queued', stage='Recovering interrupted job'))
         db.commit()
+        in_flight = list(db.scalars(select(ProcessingJob).where(ProcessingJob.status == 'processing')))
+        if any(item.payload.get('processing_provider') == 'local_ai' for item in in_flight): return None
         occupied = select(ProcessingJob.source_id).where(ProcessingJob.status == 'processing')
         candidate = db.scalar(select(ProcessingJob).where(ProcessingJob.status == 'queued', ~ProcessingJob.source_id.in_(occupied)).order_by(ProcessingJob.created_at).limit(1))
         if not candidate:
             return None
+        if candidate.payload.get('processing_provider') == 'local_ai' and in_flight: return None
         claimed = db.execute(update(ProcessingJob).where(ProcessingJob.id == candidate.id, ProcessingJob.status == 'queued').values(status='processing', stage='Preparing source', attempts=ProcessingJob.attempts + 1, lease_until=now() + timedelta(minutes=30)))
         db.commit()
         return candidate.id if claimed.rowcount else None
 
 def progress(job_id, stage, percent):
     with SessionLocal() as db:
-        db.execute(update(ProcessingJob).where(ProcessingJob.id == job_id).values(stage=stage, progress=percent, lease_until=now() + timedelta(minutes=30)))
+        db.execute(update(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.status == 'processing').values(stage=stage, progress=percent, lease_until=now() + timedelta(minutes=30)))
         db.commit()
 
 def process_job(job_id):
-    service = create_pipeline_service()
+    with SessionLocal() as lookup:
+        snapshot = lookup.get(ProcessingJob, job_id)
+        auto = snapshot.payload.get('processing_provider') == 'local_ai'
+        options = snapshot.payload.get('options', {})
+    if auto:
+        from .services.local_auto import LocalAutoPipelineService
+        service = LocalAutoPipelineService(options, lambda stage,percent:progress(job_id,stage,percent))
+        import threading
+        def watch_cancel():
+            while not service.cancel.wait(.5):
+                with SessionLocal() as check:
+                    current = check.get(ProcessingJob, job_id)
+                    if not current or current.status not in {'queued','processing'}:
+                        return
+                    if current.payload.get('cancel_requested'):
+                        service.cancel.set()
+                        return
+        threading.Thread(target=watch_cancel, daemon=True).start()
+    else:
+        service = create_pipeline_service()
     started = time.monotonic()
     with SessionLocal() as db:
         job = db.get(ProcessingJob, job_id)
@@ -63,18 +85,19 @@ def process_job(job_id):
         transcript = transcript_row.content if transcript_row else None
         with materialize(source.storage_key) as source_path, tempfile.TemporaryDirectory(prefix='acf-render-') as temp:
             work = Path(temp)
+            if auto: service.source_path = source_path
             if transcript is None:
                 progress(job_id, 'Reading optional local subtitles' if free_mode() else 'Transcribing source with hosted AI', 8)
                 transcript = service.transcribe(source_path, cache_path=work / 'transcript.json')
                 record_usage(db, service, job.user_id, job.id)
-                db.add(Transcript(source_id=source.id, content=transcript, provider=os.getenv('TRANSCRIPTION_MODEL', 'whisper-1')))
+                db.add(Transcript(source_id=source.id, content=transcript, provider=transcript.get('provider',os.getenv('TRANSCRIPTION_MODEL','whisper-1'))))
                 db.commit()
             existing = list(db.scalars(select(EditingPlan).join(ClipCandidate).where(ClipCandidate.job_id == job_id).order_by(ClipCandidate.created_at)))
             if not existing:
                 progress(job_id, 'Validating your manual clip selection' if free_mode() else 'Selecting distinct moments and planning edits', 20)
                 if job.payload.get('plan'):
                     plans=[job.payload['plan']]
-                elif free_mode():
+                elif free_mode() and not auto:
                     if not job.payload.get('manual_selection'):
                         from .services.media import ConfigurationError
                         raise ConfigurationError('Free local rendering needs a manual selection. Create a new clip with start/end times; no AI request was made.')
@@ -100,10 +123,19 @@ def process_job(job_id):
                     continue
                 progress(job_id, f'Rendering clip {index + 1} of {len(existing)} · metadata in parallel', 25 + int(index / max(1, len(existing)) * 65))
                 output = work / f'{plan_row.id}.mp4'
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    metadata_future = pool.submit(lambda: job.payload['metadata']) if job.payload.get('metadata') else pool.submit(service.generate_metadata, plan_row.plan, rules)
+                if auto:
+                    # Finish inference and release its model before CPU rendering.
+                    metadata = service.generate_metadata(plan_row.plan, rules)
+                    db.refresh(job, ['payload'])
+                    if job.payload.get('cancel_requested'): service.cancel.set()
+                    job.payload = {**job.payload, 'auto_result': service.bundle}
+                    db.commit()
                     render = service.render_clip(source_path, plan_row.plan, transcript, output, mode=job.mode)
-                    metadata = metadata_future.result()
+                else:
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        metadata_future = pool.submit(lambda: job.payload['metadata']) if job.payload.get('metadata') else pool.submit(service.generate_metadata, plan_row.plan, rules)
+                        render = service.render_clip(source_path, plan_row.plan, transcript, output, mode=job.mode)
+                        metadata = metadata_future.result()
                 record_usage(db, service, job.user_id, job.id)
                 compliance = service.check_compliance(plan_row.plan, metadata, rules, rights_payload, render, draft_approved=False)
                 target_id = job.payload.get('clip_id')
@@ -156,7 +188,7 @@ def run_once():
             job = db.get(ProcessingJob, job_id)
             # Do not automatically retry a paid external request after an ambiguous
             # timeout. Explicit retry resumes persisted stages and completed clips.
-            job.status = 'blocked' if isinstance(exc, ConfigurationError) else 'failed'
+            job.status = 'cancelled' if job.payload.get('cancel_requested') else 'blocked' if isinstance(exc, ConfigurationError) else 'failed'
             job.error = str(exc)[:1200]
             job.stage = 'Configuration required' if job.status == 'blocked' else 'Processing stopped; completed clips remain available'
             job.lease_until = None

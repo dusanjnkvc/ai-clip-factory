@@ -1,7 +1,8 @@
 # Start the local stack in one terminal; Ctrl+C stops the child processes.
 param(
     [string]$Python = "",
-    [switch]$SkipMigrations
+    [switch]$SkipMigrations,
+    [switch]$LocalAI
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -32,6 +33,17 @@ foreach ($rawLine in Get-Content -LiteralPath $envFile) {
     [Environment]::SetEnvironmentVariable($name, $value, 'Process')
 }
 
+if ($LocalAI) {
+    $env:FREE_MODE='true'
+    $env:LOCAL_NO_AUTH='true'
+    $env:OLLAMA_BASE_URL='http://127.0.0.1:11435'
+    $env:OLLAMA_MODEL=$env:ACF_LOCAL_MODEL
+    $env:LOCAL_AI_FRAME_BATCH_SIZE='1'
+    $env:LOCAL_AI_ALLOW_MODEL_DOWNLOAD='false'
+    $env:MAX_UPLOAD_MB='1500'
+    $env:LOCAL_AI_PROXY_SIZE='1600mb'
+    if ($env:ACF_SPEECH_MODEL) { $env:LOCAL_WHISPER_MODEL=$env:ACF_SPEECH_MODEL }
+}
 $backendPath = Join-Path $projectRoot 'backend'
 $frontendPath = Join-Path $projectRoot 'frontend'
 $runtimePath = Join-Path $projectRoot '.runtime'

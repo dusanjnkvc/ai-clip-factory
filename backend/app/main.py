@@ -419,7 +419,7 @@ def retry_job(job_id: str,user: User=Depends(current_user),db: DBSession=Depends
     job = owned(db,ProcessingJob,job_id,user)
     if job.status not in {'failed','blocked'} or job.attempts>=3:
         raise HTTPException(409,'Only failed or blocked jobs with fewer than 3 attempts can resume.')
-    if free_mode() and not (job.payload.get('manual_selection') or job.payload.get('plan')):
+    if free_mode() and not (job.payload.get('manual_selection') or job.payload.get('plan') or job.payload.get('processing_provider')=='local_ai'):
         raise HTTPException(422,'This old AI job has no manual selection. Create a new free local render with start/end times.')
     if not free_mode():
         reserve_ai_budget(db,user,job.cost_reservation,job.id)
@@ -872,3 +872,75 @@ def update_settings(body: SettingsUpdate,user: User=Depends(current_user),db: DB
 @app.get('/api/audit')
 def audit_log(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     return [obj(a) for a in db.scalars(select(AuditLog).where(AuditLog.user_id==user.id).order_by(AuditLog.created_at.desc()).limit(100))]
+
+
+class AutoCreate(BaseModel):
+    source_id: str
+    campaign_id: str | None = None
+    game: str = Field(default='',max_length=160)
+    context: str = Field(default='',max_length=4000)
+    duration: float = Field(default=20,ge=1,le=180)
+    intensity: Literal['gentle','balanced','energetic'] = 'balanced'
+    platform: Literal['youtube','tiktok','instagram'] = 'youtube'
+    original_creator_confirmed: bool = False
+
+@app.post('/api/auto/jobs')
+def auto_create(body: AutoCreate, request: Request, user: User=Depends(current_user), db: DBSession=Depends(get_db)):
+    if not free_mode() or not local_no_auth() or request.client.host not in {'127.0.0.1','::1','testclient'}:
+        raise HTTPException(403,'AUTO CREATE is restricted to the free loopback local application.')
+    source=owned(db,SourceVideo,body.source_id,user)
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.source_id==source.id,ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'This source already has an active render.')
+    from .services.ollama_provider import OllamaProvider
+    OllamaProvider().require_configured(require_vision=True)
+    if body.campaign_id:
+        campaign=owned(db,Campaign,body.campaign_id,user)
+        if not campaign.rules and campaign.brief.strip(): analyze_campaign_record(db,campaign)
+    else:
+        from .services.schemas import CampaignRules
+        general=CampaignRules(campaign_name='General local creation',allowed_platforms=[body.platform],draft_approval_required=False,
+                              evidence=[{'field':'allowed_platforms','quote':body.platform,'source':'user_selected_platform'}]).model_dump()
+        campaign=Campaign(user_id=user.id,name='General local creation',brief='No external campaign supplied.',rules=general,evidence=general['evidence'],review_required=False,status='active')
+        db.add(campaign);db.flush()
+    rules=campaign.rules
+    if rules.get('automated_clipping_allowed') is False or rules.get('ai_generated_allowed') is False:
+        raise HTTPException(422,'Campaign prohibits automation; use the manual workflow.')
+    if rules.get('original_footage_required') and not body.original_creator_confirmed:
+        raise HTTPException(422,'Confirm required original creator footage before AUTO CREATE.')
+    job=ProcessingJob(user_id=user.id,campaign_id=campaign.id,source_id=source.id,mode='fast',clip_count=1,
+        cost_reservation=0,rules_snapshot=rules,payload={'processing_provider':'local_ai','options':body.model_dump()})
+    db.add(job);db.commit();return obj(job)
+
+@app.post('/api/auto/jobs/{job_id}/cancel')
+def cancel_auto(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    job=owned(db,ProcessingJob,job_id,user)
+    if job.payload.get('processing_provider')!='local_ai': raise HTTPException(422,'Not an AUTO CREATE job.')
+    if job.status not in {'queued','processing'}: raise HTTPException(409,'Job is already finished.')
+    job.payload={**job.payload,'cancel_requested':True}
+    if job.status=='queued': job.status='cancelled'
+    db.commit();return obj(job)
+
+@app.get('/api/auto/jobs/{job_id}/result')
+def auto_result(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    job=owned(db,ProcessingJob,job_id,user)
+    if job.status!='completed': raise HTTPException(409,'The final video is not ready.')
+    clip=db.scalar(select(RenderedClip).where(RenderedClip.job_id==job.id,RenderedClip.user_id==user.id))
+    if not clip: raise HTTPException(409,'No final video is stored.')
+    result=job.payload.get('auto_result',{})
+    return {'clip':clip_json(clip),'recommended':result.get('recommended'), 'research':result.get('research',{}),'platform':result.get('platform','youtube')}
+
+
+@app.get('/api/auto/jobs/{job_id}/package')
+def auto_package(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    result=auto_result(job_id,user,db)
+    clip=owned(db,RenderedClip,result['clip']['id'],user)
+    import io
+    from fastapi.responses import StreamingResponse
+    buffer=io.BytesIO()
+    with materialize(clip.storage_key) as path, zipfile.ZipFile(buffer,'w',compression=zipfile.ZIP_STORED) as archive:
+        archive.write(path,'clip.mp4')
+        archive.writestr('recommended-metadata.json',json.dumps(result['recommended'],ensure_ascii=False,indent=2))
+        archive.writestr('research.json',json.dumps(result['research'],ensure_ascii=False,indent=2))
+        archive.writestr('compliance.json',json.dumps(clip.compliance,ensure_ascii=False,indent=2))
+    buffer.seek(0)
+    return StreamingResponse(buffer,media_type='application/zip',headers={'Content-Disposition':'attachment; filename="auto-create-package.zip"'})
