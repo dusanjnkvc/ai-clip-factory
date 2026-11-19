@@ -15,6 +15,7 @@ import WorkspaceSettings from "./workspace-settings";
 import CreativeDirector from "./creative-director";
 import AutoCreate from "./auto-create";
 import Studio from "./studio";
+import {SocialConnections,PerformanceDashboard} from './social-studio';
 
 type Row = Record<string, any>;
 
@@ -232,7 +233,9 @@ export default function Factory() {
 
 
 
-      {section === "Connected Accounts" && <div className="accounts-grid">{[{name:"YouTube",key:"youtube",text:"Connect your channel with Google OAuth. Upload approved Shorts through the official YouTube Data API.",label:"Connect YouTube"},{name:"TikTok",key:"tiktok",text:"Manual upload package available. Direct publishing requires an approved Content Posting API integration.",label:"View manual workflow"},{name:"Instagram",key:"instagram",text:"Manual upload package available. Direct publishing requires an eligible account and configured Meta app.",label:"View manual workflow"}].map(p => {const account = rows.find(r => r.platform === p.key && r.status === "connected"); return <section className="panel account-card" key={p.key}><Platform name={p.key} /><h2>{p.name}</h2><Badge tone={account ? "mint" : "neutral"}>{freeMode ? "Manual workflow" : account ? "Connected" : p.key === "youtube" ? "Not connected" : "Manual workflow"}</Badge><p>{freeMode?"Download your MP4 and metadata package, upload through your own account, then record the public URL and actual publication time here.":p.text}</p><button className="button secondary" onClick={async () => { if (!user && !localNoAuth) return setAuth(true); if (freeMode || p.key !== "youtube") { go("Generated Clips"); notify("Open a clip and download its manual publishing package, including MP4 and platform metadata."); return; } try { const result = await api("/accounts/youtube/connect", {method:"POST"}); window.location.href = result.url; } catch(e) { notify((e as Error).message); } }}><Link2 size={15} />{freeMode ? "View manual workflow" : account ? "Reconnect channel" : p.label}<ArrowUpRight size={14} /></button></section>; })}</div>}
+      {section === "Connected Accounts" && process.env.NEXT_PUBLIC_BROWSER_MODE!=="true" && <SocialConnections notify={notify}/>}
+
+      {section === "Connected Accounts" && process.env.NEXT_PUBLIC_BROWSER_MODE==="true" && <div className="accounts-grid">{[{name:"YouTube",key:"youtube",text:"Connect your channel with Google OAuth. Upload approved Shorts through the official YouTube Data API.",label:"Connect YouTube"},{name:"TikTok",key:"tiktok",text:"Manual upload package available. Direct publishing requires an approved Content Posting API integration.",label:"View manual workflow"},{name:"Instagram",key:"instagram",text:"Manual upload package available. Direct publishing requires an eligible account and configured Meta app.",label:"View manual workflow"}].map(p => {const account = rows.find(r => r.platform === p.key && r.status === "connected"); return <section className="panel account-card" key={p.key}><Platform name={p.key} /><h2>{p.name}</h2><Badge tone={account ? "mint" : "neutral"}>{freeMode ? "Manual workflow" : account ? "Connected" : p.key === "youtube" ? "Not connected" : "Manual workflow"}</Badge><p>{freeMode?"Download your MP4 and metadata package, upload through your own account, then record the public URL and actual publication time here.":p.text}</p><button className="button secondary" onClick={async () => { if (!user && !localNoAuth) return setAuth(true); if (freeMode || p.key !== "youtube") { go("Generated Clips"); notify("Open a clip and download its manual publishing package, including MP4 and platform metadata."); return; } try { const result = await api("/accounts/youtube/connect", {method:"POST"}); window.location.href = result.url; } catch(e) { notify((e as Error).message); } }}><Link2 size={15} />{freeMode ? "View manual workflow" : account ? "Reconnect channel" : p.label}<ArrowUpRight size={14} /></button></section>; })}</div>}
 
 
 
@@ -240,7 +243,7 @@ export default function Factory() {
 
 
 
-      {section === "Earnings & Analytics" && <><Analytics analytics={analytics} onImport={async (file) => { const form = new FormData(); form.append("file", file); await api("/analytics/import-csv", {method:"POST", body:form}); loadSection(); }} notify={notify} /><FinancialRecords notify={notify} onSaved={()=>{loadSection();refresh();}} /></>}
+      {section === "Earnings & Analytics" && <>{process.env.NEXT_PUBLIC_BROWSER_MODE!=="true"&&<PerformanceDashboard notify={notify}/>}<Analytics analytics={analytics} onImport={async (file) => { const form = new FormData(); form.append("file", file); await api("/analytics/import-csv", {method:"POST", body:form}); loadSection(); }} notify={notify} /><FinancialRecords notify={notify} onSaved={()=>{loadSection();refresh();}} /></>}
 
 
 

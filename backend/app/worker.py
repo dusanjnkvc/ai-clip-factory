@@ -55,9 +55,11 @@ def process_job(job_id):
         snapshot = lookup.get(ProcessingJob, job_id)
         auto = snapshot.payload.get('processing_provider') == 'local_ai'
         options = snapshot.payload.get('options', {})
+        stored_bundle=snapshot.payload.get('auto_result',{})
     if auto:
         from .services.local_auto import LocalAutoPipelineService
         service = LocalAutoPipelineService(options, lambda stage,percent:progress(job_id,stage,percent))
+        service.bundle=stored_bundle
         import threading
         def watch_cancel():
             while not service.cancel.wait(.5):
@@ -94,7 +96,7 @@ def process_job(job_id):
                 db.commit()
             existing = list(db.scalars(select(EditingPlan).join(ClipCandidate).where(ClipCandidate.job_id == job_id).order_by(ClipCandidate.created_at)))
             if not existing:
-                progress(job_id, 'Validating your manual clip selection' if free_mode() else 'Selecting distinct moments and planning edits', 20)
+                progress(job_id, 'Selecting distinct local-AI moments and planning edits' if auto else 'Validating your manual clip selection' if free_mode() else 'Selecting distinct moments and planning edits', 52 if auto else 20)
                 if job.payload.get('plan'):
                     plans=[job.payload['plan']]
                 elif free_mode() and not auto:
@@ -116,12 +118,21 @@ def process_job(job_id):
                     existing.append(row)
                 db.commit()
             completed_ids = set(db.scalars(select(RenderedClip.editing_plan_id).where(RenderedClip.job_id == job_id)))
+            if auto:
+                from .publishing import selected_metadata
+                service.used_titles=[selected_metadata(c.metadata_json,'youtube').get('title','') for c in db.scalars(select(RenderedClip).where(RenderedClip.job_id==job_id))]
             for index, plan_row in enumerate(existing):
                 if stopping:
                     raise InterruptedError('Worker stopping; job will resume.')
                 if plan_row.id in completed_ids or index < job.completed_clips:
                     continue
-                progress(job_id, f'Rendering clip {index + 1} of {len(existing)} · metadata in parallel', 25 + int(index / max(1, len(existing)) * 65))
+                if auto:
+                    total=max(1,len(existing))
+                    service.progress=lambda stage,percent,i=index:progress(job_id,f'Draft {i+1} of {total} · '+stage,
+                        62+int(i/total*36)+int(max(0,min(1,(percent-65)/30))*36/total))
+                    progress(job_id,f'Preparing local draft {index+1} of {total}',62+int(index/total*36))
+                else:
+                    progress(job_id, f'Rendering clip {index + 1} of {len(existing)} · metadata in parallel', 25 + int(index / max(1, len(existing)) * 65))
                 output = work / f'{plan_row.id}.mp4'
                 if auto:
                     # Finish inference and release its model before CPU rendering.
@@ -204,6 +215,8 @@ def run_once():
 def main():
     global stopping
     logging.basicConfig(level=logging.INFO)
+    # Resumable/signed upload URLs contain temporary grants, not log text.
+    logging.getLogger('httpx').setLevel(logging.WARNING)
     def stop(*_):
         global stopping
         stopping = True

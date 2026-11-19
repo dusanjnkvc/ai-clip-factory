@@ -49,3 +49,9 @@ def test_directory_import_restricts_paths_and_preserves_original(environment,mon
     payload={'filename':'../private.mp4','rights_confirmed':True,'rights_note':'I created this source.'}
     assert client.post('/api/studio/input-directory/import',json=payload).status_code==422
     assert client.post('/api/studio/projects',json={'name':'Bad bounds','source_id':source,'minimum_duration':20,'maximum_duration':6}).status_code==422
+    cache=config.media_root/'analysis-cache';cache.mkdir()
+    cached=cache/'measurement.json';cached.write_text('{}')
+    original=config.media_root/'original.mp4';original.write_bytes(b'Original placeholder, never eligible for cache deletion.')
+    response=client.delete('/api/studio/cache')
+    assert response.status_code==200 and response.json()['removed_files']==1
+    assert original.is_file() and not cached.exists()

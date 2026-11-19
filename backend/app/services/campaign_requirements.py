@@ -1,5 +1,6 @@
 """Deterministic campaign precedence shared by generated/manual metadata."""
 import re
+from datetime import datetime,timezone
 from .schemas import CampaignRules
 
 
@@ -11,6 +12,15 @@ def ordered_hashtags(required, optional):
             result.append(tag)
             seen.add(key)
     return result
+
+
+def deadline_state(value):
+    if not value:return None
+    try:
+        parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+    except (ValueError,TypeError):return 'review'
+    if parsed.tzinfo is None:return 'review'
+    return 'expired' if parsed<datetime.now(timezone.utc) else 'open'
 
 
 def enforce_metadata(variant, rules):

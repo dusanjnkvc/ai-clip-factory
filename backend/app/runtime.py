@@ -8,6 +8,11 @@ def free_mode() -> bool:
     return os.getenv('FREE_MODE', 'true').strip().lower() not in {'false', '0', 'no', 'off'}
 
 
+def social_enabled() -> bool:
+    # Independent of paid inference. Disabled until the operator opts in.
+    return not free_mode() or os.getenv('SOCIAL_INTEGRATIONS_ENABLED','false').lower()=='true'
+
+
 def local_no_auth() -> bool:
     if not free_mode() or os.getenv('APP_ENV','development') == 'production':
         return False

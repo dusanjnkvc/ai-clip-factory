@@ -63,6 +63,7 @@ def generate_package(provider, plan, analysis, rules, research, platform="youtub
             "actual_selected_transcript": clip.transcript_excerpt[:600],
             "requirements": {k: getattr(campaign,k) for k in ["required_hashtags","required_mentions","required_disclosures","required_links"]},
             "research": {"status": research.get("status"), "classification": research.get("classification"),
+                         "user_supplied_references":research.get('user_supplied_references',[])[:5],
                          "sources": [{k:s.get(k) for k in ["url","title","published_at","tags"]} for s in research.get("sources",[])[:5]]}}, ensure_ascii=False))
     variants = []
     for item in response.variants:

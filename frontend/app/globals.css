@@ -19,3 +19,17 @@
 .source-preview{display:flex;flex-direction:column;align-items:center;gap:8px}.source-preview video{max-height:260px;width:100%;background:#08060b;border-radius:8px}.source-preview small{font-size:9px;color:#9b87a7;line-height:1.8}.local-mode-notice{margin:0}.manual-rule-fields{display:flex;flex-direction:column;gap:15px;padding:18px;border:1px solid #4b3557;border-radius:8px;background:#1c1422}.manual-rule-fields h3{font-size:13px;font-weight:500}.manual-rule-fields>p,.manual-rule-fields>small{font-size:9px;color:#a28bb0;line-height:1.8}.manual-platforms{display:flex;flex-wrap:wrap;gap:13px;align-items:center}.manual-platforms>span{font-size:11px;color:#bba4c8;width:100%}.manual-platforms .checkbox-label{align-items:center}.manual-platforms input{margin:0}
 
 .paste-captions{border:1px solid #3d2c46;border-radius:7px;padding:13px;font-size:10px;color:#ad96bc}.paste-captions>summary{cursor:pointer}.paste-captions>label{margin-top:14px}.paste-captions>small{font-size:9px;line-height:1.7;color:#8c7699;margin-top:12px}
+
+/* Native project workspace; existing browser layouts remain unchanged. */
+.studio label { margin: 12px 0; }
+.studio label:has(> input[type="checkbox"]) { display:flex; flex-direction:row; align-items:center; gap:9px; }
+.studio input[type="checkbox"] { width:16px; height:16px; flex:0 0 16px; margin:0; }
+.studio fieldset { border:1px solid var(--border,#39313f); border-radius:10px; padding:16px; margin:16px 0; }
+.studio h2,.studio h3,.studio h4 { margin-top:20px; }
+.studio p { line-height:1.6; overflow-wrap:anywhere; }
+.studio table { width:100%; border-collapse:collapse; }
+.studio th,.studio td { padding:12px; border-bottom:1px solid var(--border,#39313f); text-align:left; vertical-align:top; }
+.studio td small { display:block; margin-top:6px; }
+.studio details { margin:14px 0; }
+.studio summary { cursor:pointer; }
+.studio hr { border:0; border-top:1px solid var(--border,#39313f); margin:28px 0; }

@@ -233,7 +233,7 @@ def sampling_times(duration: float, scenes: list[dict], count: int) -> list[floa
     return sorted(round(min(max(0, timepoint), max(0, duration - .08)), 4) for timepoint in chosen)
 
 
-def sample_frames(path: Path, times: list[float], duration: float, cancel=None) -> tuple[list[dict], list[dict]]:
+def sample_frames(path: Path, times: list[float], duration: float, cancel=None, max_side=None) -> tuple[list[dict], list[dict]]:
     cv2, np, *_ = _dependencies()
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
@@ -257,7 +257,12 @@ def sample_frames(path: Path, times: list[float], duration: float, cancel=None) 
             decoded_indices.add(index)
             timestamp = min(duration - .001, max(0, index / fps))
             height, width = frame.shape[:2]
-            frame = cv2.resize(frame, (min(512, width), max(2, round(height * min(512, width) / width))))
+            if max_side is not None:
+                if not isinstance(max_side,int) or not 128<=max_side<=640:raise PipelineError('Bound the model sample dimensions between128 and640 pixels.')
+                scale=min(1,max_side/max(width,height))
+                frame=cv2.resize(frame,(max(2,round(width*scale)),max(2,round(height*scale))))
+            else:
+                frame = cv2.resize(frame, (min(512, width), max(2, round(height * min(512, width) / width))))
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             small = cv2.resize(gray, (160, 90))
             edges = cv2.absdiff(small, cv2.GaussianBlur(small, (5, 5), 0)).astype(np.float32)
@@ -461,7 +466,7 @@ class LocalSourceAnalyzer:
         self.provider = provider or OllamaProvider()
         self.cache_dir = Path(cache_dir) if cache_dir else settings.media_root / "analysis-cache"
 
-    def analyze(self, source_path: str | Path, transcript: dict | None = None, *, game: str = "", context: str = "", cancel=None, progress: Callable[[str, int], None] | None = None) -> dict:
+    def analyze(self, source_path: str | Path, transcript: dict | None = None, *, game: str = "", context: str = "", cancel=None, progress: Callable[[str, int], None] | None = None, max_frames: int | None = None) -> dict:
         progress = progress or (lambda _stage, _percent: None)
         _check(cancel)
         path = Path(source_path).resolve()
@@ -476,6 +481,10 @@ class LocalSourceAnalyzer:
         if not model_digest:
             raise ConfigurationError("Local model identity is unavailable; analysis was not generated")
         choices = {"max_frames": _setting("LOCAL_AI_MAX_FRAMES", 12, 1, 48), "batch_size": _setting("LOCAL_AI_FRAME_BATCH_SIZE", 1, 1, 4), "whisper_model": os.getenv("LOCAL_WHISPER_MODEL", "base"), "whisper_device": "cpu", "whisper_compute": "int8", "speech_decode": "ffmpeg_mono_16000_f32le_v1", "scene_detector": "pyscenedetect_content_27", "game": game[:160], "context": context[:4000], "context_size": status.get("context_size"), "analyzer": ANALYZER_VERSION}
+        if max_frames is not None:
+            if isinstance(max_frames,bool) or not isinstance(max_frames,int) or not 1<=max_frames<=48:
+                raise PipelineError('Frame budget must be an integer from1 to48.')
+            choices['max_frames']=max_frames
         source_hash = media.sha256_file(path)
         supplied = _validate_transcript(transcript, info["duration"]) if transcript is not None else None
         identity = hashlib.sha256(json.dumps({"source": source_hash, "model_digest": model_digest, "endpoint": status.get("endpoint"), "settings": choices, "supplied_transcript": supplied}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

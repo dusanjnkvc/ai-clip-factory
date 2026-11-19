@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 
 from .schemas import ClipPlan, Transcript
@@ -39,6 +40,27 @@ def ffmpeg_binary() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except (ImportError, RuntimeError) as exc:
         raise ConfigurationError("FFmpeg is unavailable. Install FFmpeg or set FFMPEG_BINARY.") from exc
+
+
+_encoder_cache={}
+
+
+def encoding_args(mode='fast'):
+    selected=os.getenv('LOCAL_AI_ENCODER','auto')
+    if selected not in {'auto','libx264','h264_nvenc'}:
+        raise ConfigurationError('LOCAL_AI_ENCODER must be auto, libx264 or h264_nvenc.')
+    binary=ffmpeg_binary()
+    if selected!='libx264' and binary not in _encoder_cache:
+        with tempfile.TemporaryDirectory(prefix='acf-encoder-') as directory:
+            try:
+                run_media([binary,'-v','error','-f','lavfi','-i','color=c=black:s=64x64:r=10','-t','.2',
+                    '-c:v','h264_nvenc','-pix_fmt','yuv420p',str(Path(directory)/'probe.mp4')],timeout=15)
+                _encoder_cache[binary]=True
+            except PipelineError:
+                _encoder_cache[binary]=False
+    if selected!='libx264' and _encoder_cache.get(binary):
+        return ['-c:v','h264_nvenc','-preset','p4','-cq','23' if mode=='fast' else '20','-b:v','0']
+    return ['-c:v','libx264','-preset','veryfast' if mode=='fast' else 'medium','-crf','22' if mode=='fast' else '19']
 
 
 def run_media(args: list[str], *, cwd: Path | None = None, timeout: int = 600) -> subprocess.CompletedProcess:
@@ -98,6 +120,11 @@ def probe_media(source_path: str | Path) -> dict:
             duration = float(info.get("format", {}).get("duration") or video.get("duration") or 0)
             audio = any(s.get("codec_type") == "audio" for s in streams)
             codec = video.get("codec_name")
+            rate=video.get('avg_frame_rate') or video.get('r_frame_rate') or '0/1'
+            try:fps=float(Fraction(rate))
+            except (ValueError,ZeroDivisionError):fps=None
+            audio_stream=next((s for s in streams if s.get('codec_type')=='audio'),{})
+            audio_codec=audio_stream.get('codec_name')
         except (KeyError, StopIteration, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise PipelineError("The file does not contain a valid timed video stream") from exc
     else:
@@ -119,9 +146,14 @@ def probe_media(source_path: str | Path) -> dict:
             width, height = height, width
         audio = bool(re.search(r"Stream[^\n]*Audio:", header))
         codec = video_match.group(1).split(" ")[0]
+        rate=re.search(r'(\d+(?:\.\d+)?) fps',header)
+        fps=float(rate[1]) if rate else None
+        audio_match=re.search(r'Audio:\s*([\w]+)',header)
+        audio_codec=audio_match[1] if audio_match else None
     if not math.isfinite(duration) or duration <= 0 or width < 16 or height < 16 or width > 16384 or height > 16384:
         raise PipelineError("Invalid video dimensions or duration")
-    return {"path": str(path), "duration": duration, "width": width, "height": height, "has_audio": audio, "codec": codec, "size_bytes": path.stat().st_size}
+    return {"path": str(path), "duration": duration, "width": width, "height": height, "has_audio": audio, "codec": codec, "size_bytes": path.stat().st_size,
+        'fps':fps if fps is not None and math.isfinite(fps) and fps>0 else None,'audio_codec':audio_codec}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -217,6 +249,8 @@ def write_subtitles(plan: ClipPlan, transcript: Transcript, output: Path) -> dic
     font_size = {"clean": 62, "bold": 74, "podcast": 66, "gaming": 58, "karaoke": 68}[style]
     outline = 3 if style == "clean" else 4
     bold = 0 if style == "clean" else -1
+    if plan.caption_size is not None:font_size=plan.caption_size
+    color='&H00'+plan.caption_color[5:7]+plan.caption_color[3:5]+plan.caption_color[1:3]
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -226,7 +260,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},&H00FFFFFF,&H0057EAFF,&H00202020,&H90000000,{bold},0,0,0,100,100,0,0,1,{outline},1,2,100,100,350,1
+Style: Default,{plan.caption_font},{font_size},{color},&H0057EAFF,&H00202020,&H90000000,{bold},0,0,0,100,100,0,0,1,{outline},1,2,100,100,{plan.caption_margin},1
 Style: Hook,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,4,1,8,100,100,240,1
 Style: Required,Arial,44,&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,8,100,100,460,1
 
@@ -236,6 +270,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
     words = timeline_words(plan, transcript) if plan.subtitles_enabled else []
     cues = timeline_cues(plan, transcript) if plan.subtitles_enabled and not words else []
+    if plan.manual_captions and plan.subtitles_enabled:
+        words=[];cues=[c.model_dump() for c in plan.manual_captions]
     # Small phrase groups retain context; \kf provides synchronized word fill.
     group = []
     groups = []
@@ -279,6 +315,7 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
     if output == source:
         raise PipelineError("Rendering must never overwrite original source media")
     info = probe_media(source)
+    output_fps=min(60,max(1,info.get('fps') or 30))
     if any(scene.end > info["duration"] + .05 for scene in plan.scenes):
         raise PipelineError("Editing timeline exceeds the source video duration")
     if mode not in {"fast", "quality"}:
@@ -314,9 +351,9 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
                 graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,split=2[fg{index}][bg{index}]")
                 graph.append(f"[bg{index}]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2[blur{index}]")
                 graph.append(f"[fg{index}]scale=1080:1920:force_original_aspect_ratio=decrease[fit{index}]")
-                graph.append(f"[blur{index}][fit{index}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30{polish}[v{index}]")
+                graph.append(f"[blur{index}][fit{index}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps={output_fps:.6f}{polish}[v{index}]")
             else:
-                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{x}:{y},scale=1080:1920:flags=bicubic,setsar=1,fps=30{polish}[v{index}]")
+                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{x}:{y},scale=1080:1920:flags=bicubic,setsar=1,fps={output_fps:.6f}{polish}[v{index}]")
             if info["has_audio"] and plan.audio_treatment != "mute":
                 graph.append(f"[0:a]atrim=start={scene.start:.4f}:end={scene.end:.4f},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}]")
             else:
@@ -329,8 +366,16 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
         treatment+=f',volume={plan.audio_volume:.4f},alimiter=limit=0.95'
         graph.append("[audio]" + treatment + "[outa]")
         temporary_video = work / "render.mp4"
-        args = [ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y", *safe_input_options(source), "-i", str(source), "-filter_complex_threads", "2", "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]", "-c:v", "libx264", "-preset", "veryfast" if mode == "fast" else "medium", "-crf", "22" if mode == "fast" else "19", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", str(temporary_video)]
-        run_media(args, cwd=work, timeout=max(600, int(sum(s.end-s.start for s in plan.scenes) * 30)))
+        encoder=encoding_args(mode)
+        prefix=[ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y", *safe_input_options(source), "-i", str(source), "-filter_complex_threads", "2", "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]"]
+        suffix=["-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", str(temporary_video)]
+        timeout=max(600,int(sum(s.end-s.start for s in plan.scenes)*30))
+        try:
+            run_media(prefix+encoder+suffix,cwd=work,timeout=timeout)
+        except PipelineError:
+            if 'h264_nvenc' not in encoder:raise
+            encoder=['-c:v','libx264','-preset','veryfast','-crf','22']
+            run_media(prefix+encoder+suffix,cwd=work,timeout=timeout)
         rendered = probe_media(temporary_video)
         expected_duration = sum(s.end - s.start for s in plan.scenes)
         if rendered["width"] != 1080 or rendered["height"] != 1920 or abs(rendered["duration"] - expected_duration) > .3 or not rendered["has_audio"]:
@@ -339,5 +384,5 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
         run_media([ffmpeg_binary(), "-v", "error", *safe_input_options(temporary_video), "-i", str(temporary_video), "-f", "null", "-"], timeout=max(120, int(expected_duration * 5)))
         shutil.copyfile(work / "captions.ass", captions_output)
         os.replace(temporary_video, output)
-    rendered.update({"path": str(output), "subtitles_path": str(captions_output), "subtitle_words": subtitle_info["words"], "subtitle_synchronized": subtitle_info["synchronized"], "subtitle_timing": subtitle_info["timing"], "subtitle_phrases": subtitle_info["phrases"], "source_had_audio": info["has_audio"], "sha256": sha256_file(output), "decode_verified": True})
+    rendered.update({"path": str(output), "subtitles_path": str(captions_output), "subtitle_words": subtitle_info["words"], "subtitle_synchronized": subtitle_info["synchronized"], "subtitle_timing": subtitle_info["timing"], "subtitle_phrases": subtitle_info["phrases"], "source_had_audio": info["has_audio"], "sha256": sha256_file(output), "decode_verified": True,'encoder':encoder[1]})
     return rendered

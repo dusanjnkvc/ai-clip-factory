@@ -80,7 +80,15 @@ def check_compliance(
 
     if campaign.required_on_video_text:
         semantic('on_video_text', 'Verify exact visible wording and readability in the rendered video: ' + '; '.join(campaign.required_on_video_text))
-    for field in ('resolution_requirements', 'logo_requirements', 'other_requirements'):
+    exact=[]
+    for requirement in campaign.resolution_requirements:
+        dimensions=re.fullmatch(r'\s*(\d{2,5})\s*[x×]\s*(\d{2,5})\s*',requirement)
+        if dimensions:
+            valid=(render_info.get('width'),render_info.get('height'))==tuple(map(int,dimensions.groups()))
+            add('campaign_resolution','PASS' if valid else 'FAIL','Required output resolution: '+requirement)
+        else:exact.append(requirement)
+    if exact:semantic('resolution_requirements','Review the actual format against: '+'; '.join(exact))
+    for field in ('logo_requirements', 'other_requirements'):
         if getattr(campaign, field):
             semantic(field, 'Verify the original requirement against the actual output: ' + '; '.join(getattr(campaign, field)))
 
@@ -116,7 +124,12 @@ def check_compliance(
     if campaign.uncertainties:
         semantic("campaign_uncertainties", "Unresolved campaign rules: " + "; ".join(campaign.uncertainties))
     if campaign.contradictions:
-        semantic("campaign_contradictions", "Contradictory campaign rules: " + "; ".join(campaign.contradictions))
+        add("campaign_contradictions", "FAIL", "Correct contradictory campaign rules before approval: " + "; ".join(campaign.contradictions))
+    if campaign.submission_deadline:
+        from .campaign_requirements import deadline_state
+        state=deadline_state(campaign.submission_deadline)
+        if state=='review':semantic('submission_deadline','Verify the deadline and timezone: '+campaign.submission_deadline)
+        else:add('submission_deadline','FAIL' if state=='expired' else 'PASS','Campaign deadline: '+campaign.submission_deadline)
     if not campaign.evidence:
         semantic("campaign_evidence", "No source evidence is stored for these campaign rules. Review the original brief and correct/evidence the rules.")
     if clip.generation_method == "local_ai":

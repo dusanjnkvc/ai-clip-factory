@@ -1,12 +1,14 @@
 # AI Clip Factory
 
-## Local Ultimate — automatic creation
+## Ultimate local gaming studio
 
-The native Windows app now has **AUTO CREATE**: local Ollama footage analysis, three candidate edits, one winner, native FFmpeg rendering, and one recommended metadata package. GitHub Pages remains the browser edition; full inference runs on localhost.
+The `codex/ultimate-platform` native upgrade adds projects with **three approximately10-second drafts**, local Ollama footage analysis, campaign PDF/TXT/DOCX imports, source-referenced rules, native FFmpeg edits, platform-specific text, actual-render editorial scores and version-specific approval. The existing manual tools, saved records and single-winner API remain available. GitHub Pages remains the browser edition; full inference runs on localhost.
 
 From the project folder, run `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1 -Setup` once for free dependencies/models, then `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1`. Use an existing Python3.12 `.venv`, Node, Ollama and `.env` (copy `.env.example` for a new checkout). Open http://localhost:3000. No paid AI key is needed. A public YouTube research key is optional; missing research is explicitly labeled.
 
 See [implementation and actual validation](docs/LOCAL_ULTIMATE.md). Tests using controlled inference are distinct from real local-model acceptance. The tested model override is `qwen3-vl:4b-instruct`; the configurable provider default remains the requested `qwen3-vl:4b`.
+
+For this upgrade's current verification, see [Ultimate platform](docs/ULTIMATE_PLATFORM.md), [third-party audit](THIRD_PARTY_LICENSES.md), and [optional social setup](docs/SOCIAL_SETUP.md). Social connections are opt-in and independent of free local AI. Real publishing needs your official developer configuration, account authorization, current-version approval and explicit posting consent; no platform credentials are required for local video creation.
 
 
 A free clipping workspace with **no login, paid AI API, or subscription requirement**. The GitHub Pages edition stores your videos and project records in your browser and renders clips there with FFmpeg WebAssembly. It needs no Python server, cloud worker, OpenAI key, or local AI model.

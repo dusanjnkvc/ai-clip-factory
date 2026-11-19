@@ -1,5 +1,6 @@
 """Local-only orchestration; existing native renderer and contracts are reused."""
 import threading
+import os
 from .pipeline import PipelineService
 from .ollama_provider import OllamaProvider, InferenceCancelled
 from .local_analysis import LocalSourceAnalyzer
@@ -14,6 +15,10 @@ class LocalAutoPipelineService(PipelineService):
         self.cancel = threading.Event()
         super().__init__(OllamaProvider(self.cancel))
         self.options = options or {}
+        if self.options.get('studio'):
+            # Keep one small model warm within a serial phase, then explicitly
+            # unload it before rendering/transcription or leaving inference.
+            self.provider.keep_alive_seconds=60
         self.progress = progress or (lambda stage, percent: None)
         self.analysis = None
         self.bundle = {}
@@ -25,11 +30,14 @@ class LocalAutoPipelineService(PipelineService):
     def _analyze(self, path, transcript=None):
         self.analysis = LocalSourceAnalyzer(self.provider).analyze(path, transcript,
             game=self.options.get('game',''), context=self.options.get('context',''), cancel=self.cancel,
-            progress=lambda stage,percent:self.progress(stage,5+int(percent*.45)))
+            progress=lambda stage,percent:self.progress(stage,5+int(percent*.45)),
+            max_frames={'fast':6,'balanced':12,'quality':24}.get(self.options.get('processing_mode','balanced')) if self.options.get('studio') and not os.getenv('LOCAL_AI_MAX_FRAMES') else None)
 
     def plan_clips(self, transcript, rules, media_info, **kwargs):
         if self.analysis is None:
             supplied = transcript if transcript.get('words') or transcript.get('segments') else None
+            if str(transcript.get('provider','')).startswith('faster_whisper'):
+                supplied=None
             self._analyze(media_info['path'], supplied)
         self.progress('Ranking source-grounded highlights',52)
         bounds=dict(rules)
@@ -79,13 +87,14 @@ class LocalAutoPipelineService(PipelineService):
         if self.analysis is None: self._analyze(self.source_path)
         self.progress('Researching optional public sources',65)
         research=TrendResearch().research(self.options.get('game') or self.analysis['game_or_topic'],self.options.get('platform','youtube'))
+        research['user_supplied_references']=self.options.get('research_examples',[])
         self.progress('Writing and selecting source-grounded metadata locally',69)
         draft=self.bundle.get('drafts',{}).get(str(plan['start']),{})
         metadata_context={**self.analysis,'ending_checks':draft.get('ending_checks',self.bundle.get('ending_checks',[]))}
         if self.options.get('studio'):
             from .studio_metadata import generate_studio_package
             used=getattr(self,'used_titles',[])
-            package=generate_studio_package(self.provider,plan,metadata_context,rules,research,used)
+            package=generate_studio_package(self.provider,plan,metadata_context,rules,research,used,self.options.get('history'))
             self.used_titles=[*used,package['recommended']['title']]
             package['platform']='youtube'
             draft['hook_candidates']=package['hook_candidates']
@@ -110,6 +119,11 @@ class LocalAutoPipelineService(PipelineService):
     def evaluate_render(self,path,plan,metadata):
         from .viral_score import evaluate_render
         self.progress('Inspecting the actual rendered draft and calculating editorial scores',90)
-        result=evaluate_render(path,plan,metadata,self.provider,self.bundle.get('research'))
-        self.provider.unload()
-        return result
+        try:
+            return evaluate_render(path,plan,metadata,self.provider,self.bundle.get('research'))
+        except Exception as exc:
+            if self.cancel.is_set():raise
+            return {'status':'unavailable','reason':'Actual-render evaluation failed: '+str(exc)[:400],
+                'platforms':{},'suggestions':[],'publish_ready':False}
+        finally:
+            self.provider.unload()

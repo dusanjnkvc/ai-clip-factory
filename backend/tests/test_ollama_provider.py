@@ -63,6 +63,20 @@ def test_defaults_and_strict_json_schema_output_stay_local_without_keys():
     assert adapter.usage[0]["model_digest"] == "local-test-digest"
 
 
+def test_gpu_memory_error_retries_same_local_model_on_cpu():
+    chats=[]
+    def handler(request):
+        if request.url.path=='/api/generate':return httpx.Response(200,json={'done':True})
+        chats.append(json.loads(request.content))
+        if len(chats)==1:return httpx.Response(500,json={'error':'CUDA out of memory'})
+        return httpx.Response(200,text='{"message":{"content":"{\\"summary\\":\\"Actual retry contract\\",\\"count\\":1}"},"done":true}\n')
+    adapter,_=provider(handler)
+    answer=adapter.structured(Answer,'Analyze locally.','Bounded input.')
+    assert answer.count==1 and chats[1]['options']['num_gpu']==0
+    assert chats[0]['model']==chats[1]['model']
+    assert adapter.usage[-1]['memory_recovery']=='same_local_model_on_cpu_after_gpu_memory_error'
+
+
 @pytest.mark.parametrize("url", ["https://api.ollama.com", "http://192.168.1.2:11434", "http://127.0.0.1:11434/api", "http://user:password@localhost:11434", "http://localhost:11434?key=secret", "http://localhost:11434#fragment"])
 def test_non_loopback_or_embedded_url_state_is_rejected_before_http(monkeypatch, url):
     monkeypatch.setenv("OLLAMA_BASE_URL", url)

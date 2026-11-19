@@ -186,6 +186,11 @@ class ClipPlan(Model):
     required_on_video_text: list[str] = Field(default_factory=list, max_length=6)
     audio_volume: float = Field(default=1,ge=0,le=2)
     audio_denoise: bool = False
+    manual_captions: list[Segment] = Field(default_factory=list,max_length=100)
+    caption_font: Literal['Arial','Noto Sans','DejaVu Sans'] = 'Arial'
+    caption_color: str = Field(default='#FFFFFF',pattern='^#[0-9A-Fa-f]{6}$')
+    caption_size: int | None = Field(default=None,ge=30,le=100)
+    caption_margin: int = Field(default=350,ge=200,le=650)
 
     @model_validator(mode="after")
     def timeline(self):
@@ -197,6 +202,8 @@ class ClipPlan(Model):
             if scene.start < self.start - .001 or scene.end > self.end + .001:
                 raise ValueError("Scene is outside the selected source range")
         duration = sum(s.end - s.start for s in self.scenes)
+        if any(c.end>duration+.001 for c in self.manual_captions):
+            raise ValueError('Manual caption cues use output seconds and must remain inside the rendered duration.')
         if not 1 <= duration <= 600:
             raise ValueError("Rendered timeline must be between one second and ten minutes")
         return self

@@ -2,6 +2,8 @@
 
 import {useEffect,useState} from 'react';
 import {api,downloadArtifact} from '@/lib/api';
+import {PublishDraft} from './social-studio';
+import ResearchPanel from './research-panel';
 type Row=Record<string,any>;
 
 export default function Studio({notify}:{notify:(text:string)=>void}) {
@@ -23,10 +25,10 @@ export default function Studio({notify}:{notify:(text:string)=>void}) {
   }
   useEffect(()=>{refresh().catch(e=>setError(e.message));},[]);
   useEffect(()=>{
-    if(!selected?.job||!['queued','processing'].includes(selected.job.status))return;
+    if(!selected?.job||!['queued','processing'].includes(selected.job.status)&&!selected.active_jobs?.length)return;
     const timer=setInterval(()=>open(selected.id).catch(e=>setError(e.message)),2500);
     return()=>clearInterval(timer);
-  },[selected?.id,selected?.job?.status]);
+  },[selected?.id,selected?.job?.status,selected?.active_jobs?.length]);
   async function upload(file:File) {
     if(!rights)throw new Error('Confirm your permission to use the selected videos.');
     const form=new FormData();form.append('file',file);form.append('rights_confirmed','true');
@@ -44,6 +46,9 @@ export default function Studio({notify}:{notify:(text:string)=>void}) {
         const created=await api('/campaigns',{method:'POST',body:JSON.stringify({name:name+' campaign',brief})});
         campaignId=created.id;
         if(document){const form=new FormData();form.append('file',document);await api(`/campaigns/${campaignId}/attachments`,{method:'POST',body:form});}
+        setCampaign(campaignId);setBrief('');setDocument(null);
+        setStage('Extracting source-quoted campaign rules locally');
+        await api(`/studio/campaigns/${campaignId}/analyze`,{method:'POST'});
       }
       let referenceId=reference;
       if(referenceVideo){setStage('Measuring the reference style');const uploaded=await upload(referenceVideo);referenceId=(await api('/studio/references',{method:'POST',body:JSON.stringify({source_id:uploaded.id,name:referenceVideo.name})})).id;}
@@ -60,8 +65,9 @@ export default function Studio({notify}:{notify:(text:string)=>void}) {
     catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   const selectedSource=sources.find(s=>s.id===source);
-  return <section className="panel" style={{padding:24}}>
+  return <section className="panel form-body studio" style={{padding:24}}>
     <div className="panel-heading"><div><h2>Local gaming studio</h2><p>Three edited drafts. Your review and approval. No paid AI calls.</p></div></div>
+    <ResearchPanel notify={notify}/>
     {error&&<p role="alert" style={{color:'#ffafb8'}}>{error}</p>}
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(290px,1fr))',gap:24}}>
       <div><h3>New project</h3><label>Project name<input value={name} onChange={e=>setName(e.target.value)}/></label>
@@ -89,14 +95,18 @@ export default function Studio({notify}:{notify:(text:string)=>void}) {
     </div>
     <hr/><h3>Projects</h3><div className="button-row">{projects.map(p=><button className="button secondary" key={p.id} onClick={()=>open(p.id).catch(e=>setError(e.message))}>{p.name} · {p.job?.status||'imported'}</button>)}</div>
     {selected&&<div><h2>{selected.name}</h2>{selected.job&&<p role="status">{selected.job.status} · {selected.job.progress}% · {selected.job.error||selected.job.stage}</p>}
+      {selected.active_jobs?.filter((j:Row)=>j.id!==selected.job?.id).map((j:Row)=><p key={j.id} role="status">Updating draft: {j.progress}% · {j.stage}</p>)}
+      {selected.job&&['failed','blocked'].includes(selected.job.status)&&<button className="button secondary" onClick={()=>api(`/jobs/${selected.job.id}/retry`,{method:'POST'}).then(()=>open(selected.id)).catch(e=>setError(e.message))}>Retry remaining drafts</button>}
       {selected.job&&['queued','processing'].includes(selected.job.status)&&<button className="button secondary" onClick={()=>api(`/auto/jobs/${selected.job.id}/cancel`,{method:'POST'}).then(()=>open(selected.id)).catch(e=>setError(e.message))}>Cancel processing</button>}
       {selected.job?.payload?.auto_result?.shortfall&&<p>{selected.job.payload.auto_result.shortfall}</p>}
+      <button className="button secondary" onClick={()=>downloadArtifact(`/studio/projects/${selected.id}/export`).catch(e=>setError(e.message))}>Download approved package</button>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:24}}>{selected.drafts?.map((draft:Row)=><article key={draft.id} className="panel" style={{padding:16}}>
         <h3>{draft.title}</h3><p>Version {draft.current_version} · {draft.decision} · {draft.compliance.status}</p>
         <video src={draft.preview_url+`?v=${draft.current_version}`} controls playsInline preload="metadata" style={{width:'100%',maxHeight:420}}/>
         <p>{Number(draft.media_info.duration).toFixed(1)}s · {draft.plan.edit_dna.visual_effects}</p>
         {['youtube','tiktok'].map(platform=>{const score=draft.evaluation?.platforms?.[platform];const block=draft.metadata[platform];const meta=block.variants[block.recommended_index];return <div key={platform}><h4>{platform} {score?`· Viral Potential ${score.score}/100`:''}</h4><p>{meta.title}</p><p>{meta.description}</p><p>{meta.hashtags.join(' ')}</p><button className="button secondary" onClick={()=>navigator.clipboard.writeText([meta.title,meta.description,...meta.hashtags].join('\n')).then(()=>notify('Copied publication text.'))}>Copy {platform} text</button>{score&&<details><summary>Score breakdown · {score.confidence} confidence</summary>{Object.entries(score.components).map(([k,v])=><p key={k}>{k}: {String(v)}</p>)}<p>{score.evidence_mode} · {score.limitation}</p></details>}</div>;})}
         <div className="button-row"><button className="button primary" onClick={()=>setEditing(draft)}>Edit and review</button><button className="button secondary" onClick={()=>downloadArtifact(`/clips/${draft.id}/download`).catch(e=>setError(e.message))}>Download preview</button></div>
+        <PublishDraft draft={draft} notify={notify}/>
         {!!draft.evaluation?.suggestions?.length&&<button className="button secondary" onClick={()=>api(`/studio/drafts/${draft.id}/auto-improve`,{method:'POST'}).then(()=>{notify('New version queued; approval will be required.');return open(selected.id);}).catch(e=>setError(e.message))}>Auto-improve draft</button>}
       </article>)}</div>
       <h3>Publishing advisor</h3><p>Scores are editorial estimates, not promised views. Only compliant drafts are eligible.</p>{['youtube','tiktok'].map(p=><div key={p}><strong>{p}</strong><p>{advisor[p]?.posting_time}</p>{advisor[p]?.order?.map((r:Row,i:number)=><p key={r.clip_id}>{i+1}. {r.title} · {r.score}/100 · {r.eligible?'eligible':'review required'}</p>)}</div>)}
@@ -112,13 +122,15 @@ function DraftEditor({draft,onClose,onSaved}:{draft:Row;onClose:()=>void;onSaved
   function change(next:Row){setHistory(h=>[...h,structuredClone(plan)]);setFuture([]);setPlan(next);}
   async function act(action:()=>Promise<any>){setBusy(true);setError('');try{await action();await onSaved();onClose();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
   function patchScene(index:number,key:string,value:any){const scenes=plan.scenes.map((s:Row,i:number)=>i===index?{...s,[key]:value}:s);change({...plan,scenes,start:Math.min(...scenes.map((s:Row)=>s.start)),end:Math.max(...scenes.map((s:Row)=>s.end))});}
-  return <div className="modal-backdrop"><div className="modal" style={{maxWidth:960,maxHeight:'90vh',overflowY:'auto',padding:28}}><h2>Edit draft · version {draft.current_version}</h2><button className="button secondary" onClick={onClose}>Close</button>{error&&<p role="alert">{error}</p>}
+  return <div className="modal-backdrop"><div className="modal form-body studio" style={{maxWidth:960,maxHeight:'90vh',overflowY:'auto',padding:28}}><h2>Edit draft · version {draft.current_version}</h2><button className="button secondary" onClick={onClose}>Close</button>{error&&<p role="alert">{error}</p>}
     <video controls src={draft.preview_url} style={{width:220,maxHeight:390}}/>
     <div className="button-row"><button className="button secondary" disabled={!history.length} onClick={()=>{setFuture(f=>[plan,...f]);setPlan(history[history.length-1]);setHistory(h=>h.slice(0,-1));}}>Undo</button><button className="button secondary" disabled={!future.length} onClick={()=>{setHistory(h=>[...h,plan]);setPlan(future[0]);setFuture(f=>f.slice(1));}}>Redo</button></div>
     <label>On-video hook<input value={plan.hook} onChange={e=>change({...plan,hook:e.target.value})}/></label>
     <label>Framing<select value={plan.framing} onChange={e=>change({...plan,framing:e.target.value})}><option value="fit">Full gameplay</option><option value="crop">Vertical crop</option></select></label>
     <label>Caption style<select value={plan.subtitle_style} onChange={e=>change({...plan,subtitle_style:e.target.value})}>{['clean','bold','gaming','karaoke','podcast'].map(v=><option key={v}>{v}</option>)}</select></label>
     <label><input type="checkbox" checked={plan.subtitles_enabled} onChange={e=>change({...plan,subtitles_enabled:e.target.checked})}/> Show actual timed captions</label>
+    <label>Caption font<select value={plan.caption_font||'Arial'} onChange={e=>change({...plan,caption_font:e.target.value})}>{['Arial','Noto Sans','DejaVu Sans'].map(v=><option key={v}>{v}</option>)}</select></label><label>Caption color<input type="color" value={plan.caption_color||'#FFFFFF'} onChange={e=>change({...plan,caption_color:e.target.value})}/></label><label>Caption size<input type="number" min={30} max={100} value={plan.caption_size||62} onChange={e=>change({...plan,caption_size:+e.target.value})}/></label>
+    <details><summary>Correct caption text and timing</summary><p>Manual corrections use output-video seconds and replace automatic captions for this draft.</p>{(plan.manual_captions||[]).map((c:Row,i:number)=><div key={i}>{['start','end','text'].map(k=><label key={k}>{k}<input type={k==='text'?'text':'number'} step={.01} value={c[k]} onChange={e=>change({...plan,manual_captions:plan.manual_captions.map((v:Row,n:number)=>n===i?{...v,[k]:k==='text'?e.target.value:+e.target.value}:v)})}/></label>)}<button className="button secondary" onClick={()=>change({...plan,manual_captions:plan.manual_captions.filter((_:Row,n:number)=>n!==i)})}>Remove caption</button></div>)}<button className="button secondary" onClick={()=>change({...plan,manual_captions:[...(plan.manual_captions||[]),{start:0,end:1,text:''}]})}>Add corrected caption</button></details>
     <label>Audio<select value={plan.audio_treatment} onChange={e=>change({...plan,audio_treatment:e.target.value})}><option value="source">Original game audio</option><option value="mute">Mute</option></select></label>
     <label>Volume<input type="range" min={0} max={2} step={.05} value={plan.audio_volume??1} onChange={e=>change({...plan,audio_volume:+e.target.value})}/></label>
     <label><input type="checkbox" checked={plan.audio_denoise||false} onChange={e=>change({...plan,audio_denoise:e.target.checked})}/> Reduce source noise</label>

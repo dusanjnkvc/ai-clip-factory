@@ -29,7 +29,7 @@ from .publishing import configured as youtube_configured, authorization_url, fin
 from .request_limits import RequestBodyLimitMiddleware
 from .usage import record_usage
 from .services.media import ConfigurationError, PipelineError
-from .runtime import free_mode, local_no_auth, create_pipeline_service
+from .runtime import free_mode, local_no_auth, create_pipeline_service, social_enabled
 
 
 @asynccontextmanager
@@ -266,7 +266,7 @@ def campaign_attachment(campaign_id: str,file: UploadFile=File(...),user: User=D
         raise HTTPException(422,'Upload PDF, TXT, DOCX, PNG or JPEG.')
     with tempfile.TemporaryDirectory(prefix='acf-brief-') as temp:
         path = Path(temp)/('attachment'+suffix)
-        size = save_upload(file,path,20*1024*1024)
+        size = save_upload(file,path,15*1024*1024)
         with path.open('rb') as attached:
             magic = attached.read(8)
         if not ((suffix=='.txt' and b'\x00' not in magic) or (suffix=='.docx' and magic.startswith(b'PK')) or (suffix=='.pdf' and magic.startswith(b'%PDF')) or (suffix=='.png' and magic.startswith(b'\x89PNG\r\n\x1a\n')) or (suffix in {'.jpg','.jpeg'} and magic.startswith(b'\xff\xd8\xff'))):
@@ -532,6 +532,7 @@ def review_clip(clip_id: str,body: ReviewUpdate,user: User=Depends(current_user)
     clip=owned(db,RenderedClip,clip_id,user)
     plan=db.get(EditingPlan,clip.editing_plan_id)
     allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','creative_context','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions','on_video_text','resolution_requirements','logo_requirements','other_requirements'}
+    allowed.add('submission_deadline')
     evidence={}
     for rule,value in body.evidence.items():
         if rule not in allowed or not isinstance(value,dict) or value.get('confirmed') is not True or len(str(value.get('note','')).strip())<8:
@@ -628,7 +629,8 @@ def youtube_connect(user: User=Depends(current_user),db: DBSession=Depends(get_d
     return {'url':authorization_url(db,user.id)}
 
 @app.get('/api/accounts/youtube/callback')
-def youtube_callback(state: str,code: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+def youtube_callback(state: str,code: str,request: Request,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    request.scope['query_string']=b''
     finish_oauth(db,user,state,code)
     return RedirectResponse(settings.frontend_url+'/?view=accounts&connected=youtube')
 
@@ -649,21 +651,34 @@ class PublishRequest(BaseModel):
     attended: bool = True
     privacy: Literal['public','private','unlisted'] = 'private'
     scheduled_at: datetime | None = None
+    made_for_kids: bool | None = None
+    version: int | None = None
 
 @app.post('/api/clips/{clip_id}/publish')
 def authorize_publish(clip_id: str,body: PublishRequest,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
-    if free_mode():
+    if not social_enabled():
         raise HTTPException(503,'Free local mode creates manual upload packages. Direct platform publishing is disabled.')
     clip=owned(db,RenderedClip,clip_id,user)
     account=owned(db,ConnectedAccount,body.account_id,user)
+    if body.version is not None and body.version!=clip.current_version:
+        raise HTTPException(409,'Draft version changed after the publishing preview. Review and approve the current version.')
     if not body.explicit_authorization:
         raise HTTPException(422,'Explicit approval is required for each publishing job.')
     if account.platform!='youtube' or account.status!='connected':
         raise HTTPException(422,'Use a connected YouTube account, or download the manual publishing package.')
     if clip.compliance.get('status')!='PASS':
         raise HTTPException(409,'Resolve all blocking compliance checks before publishing.')
+    from .social import require_approved_draft
+    require_approved_draft(db,clip)
+    if db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)) and body.made_for_kids is None:
+        raise HTTPException(422,'Select the required YouTube audience setting before publishing.')
+    if db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)) and body.version is None:
+        raise HTTPException(422,'Confirm the exact approved draft version before publishing.')
     campaign=db.get(Campaign,clip.campaign_id)
     plan=db.get(EditingPlan,clip.editing_plan_id)
+    from .services.campaign_requirements import deadline_state
+    if deadline_state(campaign.rules.get('submission_deadline'))=='expired':
+        raise HTTPException(409,'Campaign deadline has expired.')
     if campaign.rules!=plan.rules_snapshot:
         raise HTTPException(409,'Campaign rules changed after this clip was generated. Generate and review a clip against the current requirements.')
     if account.platform not in campaign.rules.get('allowed_platforms',[]):
@@ -679,7 +694,9 @@ def authorize_publish(clip_id: str,body: PublishRequest,user: User=Depends(curre
         schedule=schedule.astimezone(timezone.utc).replace(tzinfo=None)
         if schedule<=now():
             raise HTTPException(422,'Choose a future scheduled time.')
-    job=PublishingJob(user_id=user.id,clip_id=clip.id,account_id=account.id,platform='youtube',version=clip.current_version,authorized=True,attended=body.attended,privacy=body.privacy,scheduled_at=schedule,authorization_expires_at=now()+timedelta(minutes=5) if submission_minutes(campaign.rules) else None)
+    existing=db.scalar(select(PublishingJob).where(PublishingJob.clip_id==clip.id,PublishingJob.platform=='youtube',PublishingJob.version==clip.current_version))
+    if existing:return obj(existing,'upload_state')
+    job=PublishingJob(user_id=user.id,clip_id=clip.id,account_id=account.id,platform='youtube',version=clip.current_version,authorized=True,attended=body.attended,privacy=body.privacy,scheduled_at=schedule,upload_state={'made_for_kids':body.made_for_kids or False},authorization_expires_at=now()+timedelta(minutes=5) if submission_minutes(campaign.rules) else None)
     db.add(job)
     db.flush()
     audit(db,user.id,'publishing.authorized',job.id,privacy=body.privacy,clip_version=clip.current_version,scheduled_at=public_time(schedule))
@@ -943,7 +960,8 @@ def auto_result(job_id: str,user: User=Depends(current_user),db: DBSession=Depen
     clip=db.scalar(select(RenderedClip).where(RenderedClip.job_id==job.id,RenderedClip.user_id==user.id))
     if not clip: raise HTTPException(409,'No final video is stored.')
     result=job.payload.get('auto_result',{})
-    return {'clip':clip_json(clip),'recommended':result.get('recommended'), 'research':result.get('research',{}),
+    from .publishing import selected_metadata
+    return {'clip':clip_json(clip),'recommended':selected_metadata(clip.metadata_json,result.get('platform','youtube')), 'research':result.get('research',{}),
             'ending_checks':result.get('ending_checks',[]),'platform':result.get('platform','youtube')}
 
 
@@ -965,3 +983,7 @@ def auto_package(job_id: str,user: User=Depends(current_user),db: DBSession=Depe
 
 from .studio import router as studio_router
 app.include_router(studio_router)
+from .social import router as social_router
+app.include_router(social_router)
+from .performance import router as performance_router
+app.include_router(performance_router)

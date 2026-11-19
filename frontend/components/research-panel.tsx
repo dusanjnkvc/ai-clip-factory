@@ -1,0 +1,17 @@
+"use client";
+import {useState} from 'react';
+import {api} from '@/lib/api';
+
+export default function ResearchPanel({notify}:{notify:(text:string)=>void}) {
+  const [subject,setSubject]=useState('gaming'),[report,setReport]=useState<any>(null),[error,setError]=useState('');
+  const [url,setUrl]=useState(''),[title,setTitle]=useState(''),[platform,setPlatform]=useState('tiktok'),[provenance,setProvenance]=useState('');
+  const [cache,setCache]=useState<any>(null);
+  async function load(){try{setReport(await api('/studio/research?subject='+encodeURIComponent(subject)));}catch(e){setError((e as Error).message);}}
+  async function save(){try{await api('/studio/research/examples',{method:'POST',body:JSON.stringify({url,title,platform,provenance})});setUrl('');setTitle('');await load();notify('Saved your reference with its provenance; it is not verified platform-wide trend data.');}catch(e){setError((e as Error).message);}}
+  return <details><summary>AI research and local cache</summary>{error&&<p role="alert">{error}</p>}<label>Research topic<input value={subject} onChange={e=>setSubject(e.target.value)}/></label><button className="button secondary" onClick={()=>void load()}>Load available research</button>
+    {report&&<><p>YouTube: {report.youtube.status} · {report.youtube.reason||report.youtube.limitation}</p><p>{report.tiktok_limitation}</p>{report.youtube.sources?.map((s:any)=><p key={s.url}><a href={s.url} target="_blank" rel="noreferrer">{s.title}</a> · {s.published_at} · {s.views==null?'Views unavailable':s.views+' public snapshot views'}</p>)}<h4>Your supplied examples</h4>{report.supplied_examples?.map((s:any,i:number)=><p key={i}><a href={s.url} target="_blank" rel="noreferrer">{s.title}</a> · {s.provenance} · {s.verification}</p>)}</>}
+    <h4>Add an authorized example</h4><label>Platform<select value={platform} onChange={e=>setPlatform(e.target.value)}><option>tiktok</option><option>youtube</option></select></label><label>Example link<input value={url} onChange={e=>setUrl(e.target.value)}/></label><label>Actual example title<input value={title} onChange={e=>setTitle(e.target.value)}/></label><label>Where this information came from<input value={provenance} onChange={e=>setProvenance(e.target.value)}/></label><button className="button secondary" onClick={()=>void save()}>Save example</button>
+    <label>Import example metadata · JSON<input type="file" accept=".json" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;try{if(f.size>1024*1024)throw new Error('Example import is limited to1 MB.');const examples=JSON.parse(await f.text());const r=await api('/studio/research/import',{method:'POST',body:JSON.stringify({examples:Array.isArray(examples)?examples:[examples]})});notify(`Imported ${r.imported} user-supplied references.`);await load();}catch(error){setError((error as Error).message);}}}/></label>
+    <h4>Rebuildable local cache</h4><button className="button secondary" onClick={()=>api('/studio/cache').then(setCache).catch(e=>setError(e.message))}>Inspect cache</button>{cache&&<><p>{cache.files} files · {(cache.bytes/1024/1024).toFixed(1)} MB · {cache.scope}</p><button className="button secondary" onClick={()=>api('/studio/cache',{method:'DELETE'}).then(r=>{setCache(null);notify(`Removed ${r.removed_files} rebuildable cache files. Originals preserved.`);}).catch(e=>setError(e.message))}>Clear rebuildable cache</button></>}
+  </details>;
+}

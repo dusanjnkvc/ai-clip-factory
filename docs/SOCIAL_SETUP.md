@@ -1,0 +1,42 @@
+# Optional official accounts, posting and analytics
+
+Core video creation needs no social account, paid AI key or recurring AI subscription. Keep `FREE_MODE=true`. Optional social network access uses a separate `SOCIAL_INTEGRATIONS_ENABLED=true` switch; it does not enable hosted AI or S3. The default is false. Developer credentials, approved scopes, quotas and provider policies remain prerequisites, not features the application can fabricate.
+
+## Credential storage
+
+Generate `TOKEN_ENCRYPTION_KEY` once with `.venv\Scripts\python.exe -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Put it in your ignored `.env`, alongside the client secrets. Keep the key private and persistent: changing it makes existing encrypted account credentials unreadable. Disconnect/reconnect accounts if you intentionally rotate it. The database stores encrypted tokens, while the browser receives account names, IDs, scopes and status only. Do not put credentials in frontend code, Git or screenshots. Disconnecting clears local encrypted credentials and cancels queued jobs; use the provider's account settings to revoke its grant as well.
+
+## YouTube
+
+1. Create your Google developer project and enable **YouTube Data API v3** and **YouTube Analytics API**.
+2. Configure the OAuth consent screen and permitted test users or complete the applicable verification process. Create the appropriate Web OAuth client for this same-origin local application.
+3. Register the exact callback used by the browser frontend proxy, normally `http://localhost:3000/api/accounts/youtube/callback` for local development. Match `FRONTEND_URL`, `API_BASE_URL` and your actual launcher ports.
+4. Set `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI`, `TOKEN_ENCRYPTION_KEY` and `SOCIAL_INTEGRATIONS_ENABLED=true`, then restart local services.
+5. Open **Connected Accounts → Connect YouTube**. The app requests `youtube.upload`, `youtube.readonly` and `yt-analytics.readonly`. Upload/channel access is required; missing analytics permission remains an unavailable-metrics state rather than fabricated data.
+6. Review a draft, resolve campaign checks and approve its exact version. **Prepare publishing** displays the actual video, platform text, privacy and required made-for-kids selection. Explicit authorization creates one idempotent per-platform/version job.
+
+The upload adapter resumes the saved official resumable session rather than creating a new upload after an ambiguous failure. A private/unlisted upload is not reported as a confirmed public post. Public records require the official processed/public state and provider publication timestamp. Checked November19,2026: the current official `videos.insert` reference says unverified API projects are not automatically limited to private viewing solely for that status; do not apply the older2020 private-only rule as a current blanket requirement. Actual account/API restrictions and returned visibility still take precedence.
+
+Read the current [videos.insert requirements](https://developers.google.com/youtube/v3/docs/videos/insert), [OAuth scopes](https://developers.google.com/youtube/v3/guides/auth/server-side-web-apps) and [Analytics query API](https://developers.google.com/youtube/analytics/reference/reports/query). Sync reads at most20 recent recorded posts per action. Lifetime Data API counts and dated Analytics reports are stored separately. Missing watch time, shares or permissions remain unavailable. API quotas apply; no fixed unlimited allowance is promised.
+
+## TikTok
+
+1. Register an eligible developer app with **Login Kit** and **Display API**. Request `user.info.basic` and `video.list` for account identity and supported owned-video statistics.
+2. TikTok Web Login requires a **registered static HTTPS redirect URI**. Set that exact URI in `TIKTOK_REDIRECT_URI`, with `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` and the encryption key. The callback path is `/api/social/tiktok/callback`.
+3. Preserve the loopback security model: do not expose the no-login backend through a public tunnel to satisfy callback registration. Use only an accepted HTTPS callback configuration with trusted TLS and controlled routing to your local app. A non-local deployment needs proper authentication and infrastructure; this upgrade does not provision or certify that deployment. If your approved developer setup cannot support the local callback, use the export workflow.
+4. Set `TIKTOK_SCOPES=user.info.basic,video.list` initially. If your app receives approved Content Posting API access, add `video.publish` and reconnect so the user can actually grant it.
+5. Leave `TIKTOK_DIRECT_POST_AUDITED=false` until the **actual application** completes TikTok's official audit. The flag records that external fact; it does not grant platform permission. The app blocks non-private Direct Post for an unaudited client, and TikTok independently enforces its rules. Current sharing guidelines explicitly exclude a utility solely for uploading to your own/team-managed accounts from acceptable public Direct Post use. This personal local workflow must use the export/manual fallback unless it becomes an independently qualifying, approved application; an audit is not promised.
+
+Before posting, the app queries actual creator information, displays the account and allowed privacy choices without preselecting one, respects duration/interaction restrictions, and requires posting consent, commercial-content declarations and Music Usage Confirmation. AI-generated content labeling is an explicit user choice. Direct Post sends the local file through the official FILE_UPLOAD flow. It persists initialization and chunk state; ambiguous initialization/chunk outcomes require review rather than duplicate uploads. Polling confirms the existing publish ID. A public record additionally requires an authorized public video ID, share URL and actual platform timestamp. Private completion remains private completion.
+
+The permitted fallback is the existing MP4/metadata package and manual upload through your account. No scraping, browser posting, scope bypass or invented public-post success is used. Display API metrics are lifetime snapshots; advanced retention/watch-time and broad platform-wide trend discovery are unavailable here. You may import authorized CSV/JSON observations or supplied research examples with provenance.
+
+References: [Login Kit Web](https://developers.tiktok.com/docs/en/login-kit-web), [Direct Post](https://developers.tiktok.com/docs/en/content-posting-api-reference-direct-post), [creator info](https://developers.tiktok.com/docs/en/content-posting-api-reference-query-creator-info), [media transfer](https://developers.tiktok.com/docs/en/content-posting-api-media-transfer-guide), [post status](https://developers.tiktok.com/docs/en/content-posting-api-reference-get-video-status), [owned-video query](https://developers.tiktok.com/docs/en/tiktok-api-v2-video-query), [sharing guidelines](https://developers.tiktok.com/docs/en/content-sharing-guidelines).
+
+## Analytics and learning boundaries
+
+CSV/JSON imports accept your recorded `post_id` or URL (or video ID plus platform), actual available metrics, provenance, and optional timezone-aware `observed_at`. A daily observation also needs `basis=daily` and an actual date. Unknown columns are reported as unused; blank/missing metrics remain null. Re-imported daily rows replace the dashboard's earlier observation for that post/date without deleting history or double-counting totals.
+
+Date-range views use actual dated observations, never a substituted lifetime total. Engagement identifies which available components it uses. Descriptive learning requires at least8 distinct clip/platform samples and3 comparable samples per group. Re-uploads do not manufacture extra independent samples. Captured views/day reduces simple post-age bias but does not control for audience/game/promotion differences or establish causality. Posting-window observations need additional multi-week samples; otherwise the app says evidence is insufficient. Resetting the profile preserves videos and analytics.
+
+Contract tests use controlled HTTP responses. No live OAuth, real upload or authenticated analytics success is established until you configure credentials, grant the official permissions and perform the corresponding authorized operation. Development acceptance never publishes supplied footage automatically.

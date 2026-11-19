@@ -8,9 +8,11 @@ def test_actual_render_samples_score_components_and_metadata_changes(tmp_path):
     path=tmp_path/'render.mp4'
     run_media([ffmpeg_binary(),'-v','error','-f','lavfi','-i','testsrc2=size=180x320:rate=12','-t','2','-c:v','libx264',str(path)])
     class Observer:
+        calls=0
         def structured(self,schema,system,prompt,images):
-            assert len(images)==3 and all(i['data_url'].startswith('data:image/jpeg;base64,') for i in images)
-            return schema.model_validate({'opening_visual':70,'visual_interest':60,'readability':40,'framing':40,'ending_visual':60,'observed_issue':'Controlled classifier of actual JPEGs.','uncertainty':'Not a semantic acceptance test.'})
+            self.calls+=1
+            assert len(images)==1 and all(i['data_url'].startswith('data:image/jpeg;base64,') for i in images)
+            return schema.model_validate({'clarity':70,'visual_interest':60,'readability':40,'framing':40,'observed_issue':'Controlled classifier of actual JPEGs.','uncertainty':'Not a semantic acceptance test.'})
     result=evaluate_render(path,sample_plan(),sample_metadata(),Observer())
     assert len(result['visual']['sampled_frames'])==3 and result['visual']['artifact_sha256']
     assert result['visual']['decode_verified'] and result['platforms']['youtube']['confidence']=='low'
