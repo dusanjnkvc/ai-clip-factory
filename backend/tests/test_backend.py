@@ -21,7 +21,10 @@ def environment(tmp_path,monkeypatch):
     monkeypatch.setenv('LOCAL_NO_AUTH','false')
     monkeypatch.delenv('OPENAI_API_KEY',raising=False)
     monkeypatch.delenv('S3_BUCKET',raising=False)
-    engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
+    # File-backed SQLite gives worker/cancellation sessions independent real
+    # transactions; a StaticPool memory connection lets one rollback undo
+    # another thread's pending clip insertion.
+    engine=create_engine('sqlite:///'+str(tmp_path/'test.db'),connect_args={'check_same_thread':False})
     Base.metadata.create_all(engine)
     factory=sessionmaker(bind=engine,expire_on_commit=False)
     def db_dependency():

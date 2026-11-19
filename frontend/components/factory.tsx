@@ -14,6 +14,7 @@ import ManualRuleFields from "./manual-rule-fields";
 import WorkspaceSettings from "./workspace-settings";
 import CreativeDirector from "./creative-director";
 import AutoCreate from "./auto-create";
+import Studio from "./studio";
 
 type Row = Record<string, any>;
 
@@ -217,7 +218,7 @@ export default function Factory() {
 
       {section === "AI Creative Director" && (process.env.NEXT_PUBLIC_BROWSER_MODE === "true" ? <CreativeDirector notify={notify} onRendered={() => { go("Generated Clips"); void refresh(); }} /> : <section className="panel"><Empty icon={Sparkles} title="Open Creative Director in the browser edition" text="Local footage analysis, editable storyboards, and free rendering run in the GitHub Pages edition. Its workspace is stored in that browser." action={<a className="button primary" href="https://dusanjnkvc.github.io/ai-clip-factory/" target="_blank" rel="noreferrer">Open free browser edition<ExternalLink size={15}/></a>} /></section>)}
 
-      {section === "AUTO CREATE" && <AutoCreate notify={notify} onManual={()=>{setCampaignOnly(false);setCreating(true);}}/>}
+      {section === "AUTO CREATE" && <Studio notify={notify}/>}
 
       {section === "Video Library" && <section className="panel"><div className="panel-heading"><h2>Authorized source videos<span className="count-badge">{rows.length}</span></h2><button className="text-button" onClick={() => newWork()}><UploadCloud size={15} />Upload video</button></div>{rows.length ? <div className="source-list">{rows.map(s => <div className="source-row" key={s.id}><span className="source-icon"><Video size={23} /></span><div><strong>{s.filename || s.name || "Source video"}</strong><small>{s.duration ? `${Math.round(s.duration)} seconds · ` : ""}{s.width && s.height ? `${s.width} × ${s.height} · ` : ""}{date(s.created_at)}</small></div><Badge tone="mint">Rights recorded</Badge><button className="button secondary small-button" onClick={() => newWork()}>Create clips<ArrowRight size={14} /></button></div>)}</div> : <Empty icon={UploadCloud} title="Good stories start with good source material" text="Upload an MP4, MOV, or WebM you own or have permission to use. Originals are preserved." action={<button className="button primary" onClick={() => newWork()}><UploadCloud size={16} />Upload source video</button>} />}</section>}
 

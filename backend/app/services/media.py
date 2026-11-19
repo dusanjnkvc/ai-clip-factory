@@ -228,6 +228,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial,{font_size},&H00FFFFFF,&H0057EAFF,&H00202020,&H90000000,{bold},0,0,0,100,100,0,0,1,{outline},1,2,100,100,350,1
 Style: Hook,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,4,1,8,100,100,240,1
+Style: Required,Arial,44,&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,8,100,100,460,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -260,6 +261,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     duration = sum(s.end - s.start for s in plan.scenes)
     if plan.show_hook and plan.hook:
         events.append(f"Dialogue: 1,0:00:00.00,{_ass_time(min(2.5, duration))},Hook,,0,0,0,,{_ass_escape(plan.hook)}")
+    if plan.required_on_video_text:
+        text=' · '.join(plan.required_on_video_text)
+        if len(text)>350:
+            raise PipelineError('Mandatory on-video text exceeds a readable overlay. Review campaign placement manually.')
+        events.append(f"Dialogue: 2,0:00:00.00,{_ass_time(duration)},Required,,0,0,0,,{_ass_escape(text)}")
     output.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     return {"words": len(words), "phrases": len(groups) + len(cues), "synchronized": bool(words or cues),
             "timing": "word" if words else "cue" if cues else "none", "path": str(output)}
@@ -304,7 +310,13 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
                 fade = min(.14, duration/5)
                 effects.extend([f"fade=t=in:st=0:d={fade:.4f}", f"fade=t=out:st={duration-fade:.4f}:d={fade:.4f}"])
             polish = "," + ",".join(effects) if effects else ""
-            graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{x}:{y},scale=1080:1920:flags=bicubic,setsar=1,fps=30{polish}[v{index}]")
+            if plan.framing=='fit':
+                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,split=2[fg{index}][bg{index}]")
+                graph.append(f"[bg{index}]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2[blur{index}]")
+                graph.append(f"[fg{index}]scale=1080:1920:force_original_aspect_ratio=decrease[fit{index}]")
+                graph.append(f"[blur{index}][fit{index}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30{polish}[v{index}]")
+            else:
+                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{x}:{y},scale=1080:1920:flags=bicubic,setsar=1,fps=30{polish}[v{index}]")
             if info["has_audio"] and plan.audio_treatment != "mute":
                 graph.append(f"[0:a]atrim=start={scene.start:.4f}:end={scene.end:.4f},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}]")
             else:
@@ -312,7 +324,10 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
             concat.extend([f"[v{index}]", f"[a{index}]"])
         graph.append("".join(concat) + f"concat=n={len(plan.scenes)}:v=1:a=1[video][audio]")
         graph.append("[video]ass=filename=captions.ass[outv]")
-        graph.append("[audio]" + ("loudnorm=I=-16:TP=-1.5:LRA=11" if info["has_audio"] and plan.audio_treatment != "mute" else "anull") + "[outa]")
+        treatment=("loudnorm=I=-16:TP=-1.5:LRA=11" if info["has_audio"] and plan.audio_treatment != "mute" else "anull")
+        if plan.audio_denoise: treatment+=',afftdn=nf=-25'
+        treatment+=f',volume={plan.audio_volume:.4f},alimiter=limit=0.95'
+        graph.append("[audio]" + treatment + "[outa]")
         temporary_video = work / "render.mp4"
         args = [ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y", *safe_input_options(source), "-i", str(source), "-filter_complex_threads", "2", "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]", "-c:v", "libx264", "-preset", "veryfast" if mode == "fast" else "medium", "-crf", "22" if mode == "fast" else "19", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", str(temporary_video)]
         run_media(args, cwd=work, timeout=max(600, int(sum(s.end-s.start for s in plan.scenes) * 30)))

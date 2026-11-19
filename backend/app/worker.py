@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy import select, update, or_, text
 from .db import SessionLocal
 from .models import (ProcessingJob, Transcript, SourceVideo, MediaRightsRecord, ClipCandidate,
-    EditingPlan, RenderedClip, ClipVersion, ComplianceCheck, AuditLog, now)
+    EditingPlan, RenderedClip, ClipVersion, ComplianceCheck, AuditLog, DraftEvaluation, now)
 from .storage import materialize, put_file
 from .usage import record_usage
 from .runtime import free_mode, create_pipeline_service
@@ -125,7 +125,7 @@ def process_job(job_id):
                 output = work / f'{plan_row.id}.mp4'
                 if auto:
                     # Finish inference and release its model before CPU rendering.
-                    metadata = service.generate_metadata(plan_row.plan, rules)
+                    metadata = job.payload['metadata'] if job.payload.get('metadata') else service.generate_metadata(plan_row.plan, rules)
                     from sqlalchemy.orm.attributes import flag_modified
                     flag_modified(plan_row, 'plan')
                     db.refresh(job, ['payload'])
@@ -139,6 +139,7 @@ def process_job(job_id):
                         render = service.render_clip(source_path, plan_row.plan, transcript, output, mode=job.mode)
                         metadata = metadata_future.result()
                 record_usage(db, service, job.user_id, job.id)
+                evaluation=service.evaluate_render(output,plan_row.plan,metadata) if auto and options.get('studio') else None
                 compliance = service.check_compliance(plan_row.plan, metadata, rules, rights_payload, render, draft_approved=False)
                 target_id = job.payload.get('clip_id')
                 clip = db.get(RenderedClip, target_id) if target_id else None
@@ -163,6 +164,8 @@ def process_job(job_id):
                 key = f'{job.user_id}/clips/{clip.id}/v{clip.current_version}.mp4'
                 put_file(output, key)
                 clip.storage_key = key
+                if evaluation:
+                    db.add(DraftEvaluation(clip_id=clip.id,version=clip.current_version,artifact_sha256=render['sha256'],evaluation=evaluation))
                 db.add(ClipVersion(clip_id=clip.id, version=clip.current_version, plan=plan_row.plan, metadata_json=metadata, storage_key=key))
                 db.add(ComplianceCheck(clip_id=clip.id, version=clip.current_version, status=compliance['status'], checks=compliance.get('checks', []), rules_snapshot=rules))
                 job.completed_clips += 1

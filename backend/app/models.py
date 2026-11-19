@@ -237,3 +237,46 @@ class AuditLog(Record, Base):
     action: Mapped[str] = mapped_column(String(100))
     entity_id: Mapped[str | None] = mapped_column(String(36))
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class FactoryProject(Record, Base):
+    __tablename__ = 'factory_projects'
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    source_id: Mapped[str] = mapped_column(ForeignKey('source_videos.id'))
+    campaign_id: Mapped[str | None] = mapped_column(ForeignKey('campaigns.id'))
+    job_id: Mapped[str | None] = mapped_column(ForeignKey('processing_jobs.id'))
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    reference_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class ReferenceStyle(Record, Base):
+    __tablename__ = 'reference_styles'
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey('source_videos.id'))
+    name: Mapped[str] = mapped_column(String(200))
+    profile: Mapped[dict] = mapped_column(JSON)
+
+
+class DraftEvaluation(Record, Base):
+    __tablename__ = 'draft_evaluations'
+    clip_id: Mapped[str] = mapped_column(ForeignKey('rendered_clips.id'), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    evaluation: Mapped[dict] = mapped_column(JSON)
+
+
+class DraftDecision(Record, Base):
+    __tablename__ = 'draft_decisions'
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    clip_id: Mapped[str] = mapped_column(ForeignKey('rendered_clips.id'), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    decision: Mapped[str] = mapped_column(String(20))
+    note: Mapped[str] = mapped_column(Text)
+
+
+class PlatformObservation(Record, Base):
+    __tablename__ = 'platform_observations'
+    post_id: Mapped[str] = mapped_column(ForeignKey('published_posts.id'), index=True)
+    metrics: Mapped[dict] = mapped_column(JSON)
+    provenance: Mapped[str] = mapped_column(String(120))

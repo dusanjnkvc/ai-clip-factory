@@ -182,6 +182,10 @@ class ClipPlan(Model):
     score_origin: Literal["heuristic", "not_scored"] = "heuristic"
     manual_metadata: ManualMetadata | None = None
     audio_treatment: Literal["source", "mute"] = "source"
+    framing: Literal["crop", "fit"] = "crop"
+    required_on_video_text: list[str] = Field(default_factory=list, max_length=6)
+    audio_volume: float = Field(default=1,ge=0,le=2)
+    audio_denoise: bool = False
 
     @model_validator(mode="after")
     def timeline(self):
@@ -214,6 +218,7 @@ class MetadataVariant(Model):
 class PlatformMetadata(Model):
     variants: list[MetadataVariant] = Field(min_length=3, max_length=3)
     recommended_index: int = Field(ge=0, le=2)
+    title_candidates: list[dict] = Field(default_factory=list, max_length=5)
 
 
 class Metadata(Model):

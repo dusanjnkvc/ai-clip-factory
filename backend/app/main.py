@@ -508,6 +508,12 @@ def update_metadata(clip_id: str,body: ClipMetadataUpdate,user: User=Depends(cur
     clip.metadata_json=validated
     clip.current_version+=1
     clip.draft_approved=False
+    previous_score=db.scalar(select(DraftEvaluation).where(DraftEvaluation.clip_id==clip.id,DraftEvaluation.version==clip.current_version-1).order_by(DraftEvaluation.created_at.desc()))
+    if previous_score and previous_score.evaluation.get('visual'):
+        from .services.viral_score import score_metadata
+        updated={**previous_score.evaluation,'platforms':score_metadata(previous_score.evaluation['visual'],validated),
+                 'recalculation':'Metadata changed; actual unchanged artifact samples reused. Research not refreshed.'}
+        db.add(DraftEvaluation(clip_id=clip.id,version=clip.current_version,artifact_sha256=previous_score.artifact_sha256,evaluation=updated))
     clip.compliance=pipeline().check_compliance(plan.plan,body.metadata,plan.rules_snapshot,rights_for(db,clip.source_id,user.id),clip.media_info,draft_approved=False)
     clip.status='ready' if clip.compliance['status']=='PASS' else 'review'
     db.add(ClipVersion(clip_id=clip.id,version=clip.current_version,plan=plan.plan,metadata_json=body.metadata,storage_key=clip.storage_key))
@@ -525,7 +531,7 @@ class ReviewUpdate(BaseModel):
 def review_clip(clip_id: str,body: ReviewUpdate,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     clip=owned(db,RenderedClip,clip_id,user)
     plan=db.get(EditingPlan,clip.editing_plan_id)
-    allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','creative_context','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions'}
+    allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','creative_context','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions','on_video_text','resolution_requirements','logo_requirements','other_requirements'}
     evidence={}
     for rule,value in body.evidence.items():
         if rule not in allowed or not isinstance(value,dict) or value.get('confirmed') is not True or len(str(value.get('note','')).strip())<8:
@@ -608,6 +614,8 @@ def regenerate_clip(clip_id: str,body: RegenerateRequest,user: User=Depends(curr
         job.payload={**job.payload,'plan':original.plan}
     if not body.optimize_metadata:
         job.payload={**job.payload,'metadata':clip.metadata_json}
+    if db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)):
+        job.payload={**job.payload,'processing_provider':'local_ai','options':{'studio':True}}
     db.commit()
     return obj(job)
 
@@ -883,6 +891,12 @@ class AutoCreate(BaseModel):
     intensity: Literal['gentle','balanced','energetic'] = 'balanced'
     platform: Literal['youtube','tiktok','instagram'] = 'youtube'
     original_creator_confirmed: bool = False
+    clip_count: int = Field(default=1,ge=1,le=3)
+    studio: bool = False
+    processing_mode: Literal['fast','balanced','quality'] = 'balanced'
+    editing_profile: Literal['automatic','gaming','cinematic','clean','reference'] = 'automatic'
+    framing: Literal['fit','crop'] = 'fit'
+    reference_profile: dict | None = None
 
 @app.post('/api/auto/jobs')
 def auto_create(body: AutoCreate, request: Request, user: User=Depends(current_user), db: DBSession=Depends(get_db)):
@@ -907,7 +921,9 @@ def auto_create(body: AutoCreate, request: Request, user: User=Depends(current_u
         raise HTTPException(422,'Campaign prohibits automation; use the manual workflow.')
     if rules.get('original_footage_required') and not body.original_creator_confirmed:
         raise HTTPException(422,'Confirm required original creator footage before AUTO CREATE.')
-    job=ProcessingJob(user_id=user.id,campaign_id=campaign.id,source_id=source.id,mode='fast',clip_count=1,
+    if body.platform in rules.get('prohibited_platforms',[]):
+        raise HTTPException(422,'Campaign prohibits this platform.')
+    job=ProcessingJob(user_id=user.id,campaign_id=campaign.id,source_id=source.id,mode='quality' if body.processing_mode=='quality' else 'fast',clip_count=body.clip_count,
         cost_reservation=0,rules_snapshot=rules,payload={'processing_provider':'local_ai','options':body.model_dump()})
     db.add(job);db.commit();return obj(job)
 
@@ -945,3 +961,7 @@ def auto_package(job_id: str,user: User=Depends(current_user),db: DBSession=Depe
         archive.writestr('compliance.json',json.dumps(clip.compliance,ensure_ascii=False,indent=2))
     buffer.seek(0)
     return StreamingResponse(buffer,media_type='application/zip',headers={'Content-Disposition':'attachment; filename="auto-create-package.zip"'})
+
+
+from .studio import router as studio_router
+app.include_router(studio_router)
