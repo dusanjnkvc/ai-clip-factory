@@ -234,7 +234,8 @@ def rank_highlights(analysis: SourceAnalysis | dict, rules: dict | None = None, 
         candidates = [_rank_window(measured, checked_rules, start, length, rubric, audience) for start in _candidate_starts(measured, length)]
         candidates = sorted((candidate for candidate in candidates if candidate is not None), key=lambda candidate: (-candidate.score, candidate.start, candidate.end))
         for candidate in candidates:
-            if all(max(0.0, min(candidate.end, previous.end) - max(candidate.start, previous.start)) / min(candidate.end - candidate.start, previous.end - previous.start) <= .55 for previous in selected):
+            if all(not set(candidate.evidence_ids).intersection(previous.evidence_ids) and
+                max(0.0, min(candidate.end, previous.end) - max(candidate.start, previous.start)) / min(candidate.end - candidate.start, previous.end - previous.start) <= .55 for previous in selected):
                 selected.append(candidate)
             if len(selected) == count:
                 break

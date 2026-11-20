@@ -55,6 +55,8 @@ def generate_package(provider, plan, analysis, rules, research, platform="youtub
         "Respect the declared content_type: gaming footage is not real-world drone/aviation footage. "
         "Write for the intended gaming audience, not unrelated professions. Only name a game when the supplied topic is established. "
         "The supplied snapshots are chronological; do not invent causal outcomes between them. "
+        "Added hooks, captions and campaign overlays are editorial instructions, never game lore, a mystery, a design quirk or an announcement. "
+        "Never explain what an overlay means or invent official explanations, rumors, intrigue, danger or community reactions. "
         "Scores reflect uncertain editorial fit, never retention or guaranteed views. "
         "Public research may inform wording, never establish an event in this source. If unavailable use source-specific wording only.",
         json.dumps({"platform": platform, "content_type":clip.content_type,
@@ -87,8 +89,11 @@ def generate_package(provider, plan, analysis, rules, research, platform="youtub
         style_tags = ('visualanchor','visualemphasis','minimaldesign','attentiongrabber','interfacedesign','revealtext')
         variant['hashtags'] = [tag for tag in variant['hashtags'] if tag in campaign.required_hashtags or
                                not any(word in tag.casefold() for word in style_tags)]
-        if any(not re.fullmatch(r"#[\w]+",tag) for tag in variant["hashtags"]):
-            raise PipelineError("Metadata hashtags must be relevant hashtag tokens")
+        if any(not re.fullmatch(r"#[\w]+",tag) for tag in campaign.required_hashtags):
+            raise PipelineError('A mandatory campaign hashtag is not a valid hashtag token. Correct the reviewed campaign rule.')
+        # Malformed optional suggestions are omitted without changing mandatory
+        # spelling or discarding otherwise usable source-grounded publication text.
+        variant['hashtags']=[tag for tag in variant['hashtags'] if re.fullmatch(r'#[\w]+',tag)]
         required = campaign.required_mentions + campaign.required_disclosures + campaign.required_links
         for field in ("description","caption"):
             for text in required:

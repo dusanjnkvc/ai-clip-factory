@@ -19,6 +19,17 @@ from app.services.media import ConfigurationError, PipelineError
 from app.services.ollama_provider import InferenceCancelled
 
 
+def test_residual_optical_flow_follows_local_moving_pixels():
+    import cv2,numpy as np
+    from app.services.local_analysis import motion_focus
+    first=np.zeros((90,160),dtype=np.uint8);second=first.copy()
+    cv2.rectangle(first,(105,30),(125,55),220,-1)
+    cv2.rectangle(second,(110,30),(130,55),220,-1)
+    focus=motion_focus(first,second)
+    assert focus and .55<focus[0]<.95 and .2<focus[1]<.8
+    assert motion_focus(first,first) is None
+
+
 class MeasuredColorProvider:
     """Deterministic color observer testing provenance, not semantic inference."""
     def __init__(self, digest="local-test-digest"):
@@ -65,6 +76,18 @@ def test_vision_generation_schema_bounds_exact_count_timestamps_and_verbosity():
         schema.model_validate({"observations": [record, {**record, "timestamp": 999}]})
     with pytest.raises(ValidationError):
         schema.model_validate({"observations": [record, {**record, "timestamp": 1.5, "observation": "x" * 301}]})
+
+
+def test_changing_visual_budget_reuses_valid_speech_stage(two_scene_video,analyzer,monkeypatch):
+    calls=[]
+    def speech(*args):
+        calls.append(True)
+        return {'text':'','words':[],'segments':[],'provider':'no_audio','timing_source':'none'}
+    monkeypatch.setattr('app.services.local_analysis.transcribe_local',speech)
+    first=analyzer.analyze(two_scene_video,max_frames=4)
+    second=analyzer.analyze(two_scene_video,max_frames=3)
+    assert len(calls)==1 and first['cache_identity']!=second['cache_identity']
+    assert not second['cached'] and second['transcript']['words']==[]
 
 
 @pytest.fixture
@@ -165,7 +188,7 @@ def test_model_cannot_invent_timestamps_or_omit_frame_evidence(two_scene_video, 
     monkeypatch.setattr(analyzer.provider, "structured", unsupported)
     with pytest.raises(PipelineError, match="cite each supplied source frame"):
         analyzer.analyze(two_scene_video)
-    assert not list(analyzer.cache_dir.glob("*.json"))
+    assert not list(analyzer.cache_dir.glob("[0-9a-f]*.json"))
 
 
 def test_token_limited_batch_retries_same_real_frames_individually(two_scene_video, analyzer, monkeypatch):
@@ -190,7 +213,7 @@ def test_single_frame_token_failure_stops_without_substitute_analysis(two_scene_
     monkeypatch.setattr(analyzer.provider, "structured", limited)
     with pytest.raises(PipelineError, match="token limit"):
         analyzer.analyze(two_scene_video)
-    assert not list(analyzer.cache_dir.glob("*.json"))
+    assert not list(analyzer.cache_dir.glob("[0-9a-f]*.json"))
 
 
 def test_cancellation_preserves_source_without_caching_partial_results(two_scene_video, analyzer):
@@ -200,7 +223,7 @@ def test_cancellation_preserves_source_without_caching_partial_results(two_scene
         analyzer.analyze(two_scene_video, cancel=cancel)
     assert two_scene_video.is_file()
     assert not analyzer.provider.calls
-    assert not list(analyzer.cache_dir.glob("*.json"))
+    assert not list(analyzer.cache_dir.glob("[0-9a-f]*.json"))
 
 
 def test_uploaded_cues_preserve_exact_timing_and_reject_out_of_source_speech(two_scene_video, analyzer):

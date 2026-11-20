@@ -1,5 +1,19 @@
 # Ultimate platform implementation
 
+## November 20 verification checkpoint
+
+The working native upgrade includes configurable portrait 1080/720, square and landscape outputs; bounded rate ramps/freezes/zoom/shake/flash; authored procedural sound accents; caption correction; per-draft component regeneration; source-preserving proxy previews; residual optical-flow crop hints; richer reference pixel/audio/style measurements; and version-specific approved ZIP export. Optical flow follows moving pixels after median camera-motion removal. It is not verified tracking of a player, face, HUD or target. Mandatory campaign resolution remains a blocking check.
+
+Publication copy is assembled once for upload/compliance, avoiding duplicate hashtags and checking combined platform text limits. Text-only changes reuse artifact observations and require fresh approval. Malformed optional hashtag suggestions are dropped; malformed mandatory tags require campaign correction. Service errors avoid exposing provider URLs or credentials.
+
+The November 19 real GPU acceptance imported the supplied 4K Warzone trailer and generated three fully decoded 1080 × 1920, 10-second drafts in 402.58 seconds, first draft in 283.88 seconds. Source windows were 9.693–19.693, 36.4864–46.4864 and 23.39–33.39 seconds, with separate sampled evidence. This reused measured scene/speech data and performed fresh 12-frame source interpretation. Peak device memory was 5015 MiB (418 MiB baseline, 8188 MiB available device memory). Inference used CUDA; all three renders used libx264 after encoder capability fallback. This is not an NVENC success or a fully cold benchmark.
+
+That acceptance exposed substantive copy problems: a campaign overlay was interpreted as game lore and one metadata package failed optional hashtag validation. Videos remained available; failed copy blocked approval. A subsequent correction separates actual fit-composition gameplay pixels from the complete render when reviewing content, while retaining the complete image for framing/readability assessment. Regeneration creates versioned records; existing unreviewed copy must not be treated as verified source facts.
+
+Latest full local checks: 204 backend tests, 56 browser workspace/creative/API tests, native Next.js production build and GitHub Pages static build passed. Backend tests include actual FFmpeg output presets/effects, migration preservation, approval/export invalidation and source-safe preview/cache removal. Platform/OAuth tests use controlled responses; no live account upload, analytics synchronization or public publication has been performed.
+
+Remaining acceptance boundaries: real scanned-PDF OCR requires Tesseract (not installed here); live social operations require the user's developer configuration and platform approval; reference font/sound-event recognition and continuous semantic tracking remain unavailable. Scores are low-confidence editorial heuristics, not learned view predictions. A complete unattended professional-editing quality guarantee is not established by these tests. Source rights, campaign meaning, hooks and final copy require actual review.
+
 Branch: `codex/ultimate-platform`, based on the working `codex/local-ultimate` release. This upgrade preserves Next.js/React, FastAPI/SQLAlchemy, the existing database, local Ollama, worker, native FFmpeg and browser edition. New capabilities belong to the localhost edition; GitHub Pages cannot run the native worker or secure OAuth callbacks.
 
 ## Implementation record

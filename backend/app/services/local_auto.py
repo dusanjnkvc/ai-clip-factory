@@ -31,7 +31,7 @@ class LocalAutoPipelineService(PipelineService):
         self.analysis = LocalSourceAnalyzer(self.provider).analyze(path, transcript,
             game=self.options.get('game',''), context=self.options.get('context',''), cancel=self.cancel,
             progress=lambda stage,percent:self.progress(stage,5+int(percent*.45)),
-            max_frames={'fast':6,'balanced':12,'quality':24}.get(self.options.get('processing_mode','balanced')) if self.options.get('studio') and not os.getenv('LOCAL_AI_MAX_FRAMES') else None)
+            max_frames={'fast':6,'balanced':12,'quality':24}.get(self.options.get('processing_mode','balanced')) if self.options.get('studio') and os.getenv('LOCAL_AI_FRAME_OVERRIDE','false').lower()!='true' else None)
 
     def plan_clips(self, transcript, rules, media_info, **kwargs):
         if self.analysis is None:
@@ -47,7 +47,7 @@ class LocalAutoPipelineService(PipelineService):
         ranked = rank_highlights(self.analysis,bounds,self.options.get('duration',20),platform=self.options.get('platform','youtube'))
         self.progress('Evaluating eligible edit plans locally',58)
         timelines = build_timelines(self.analysis,ranked,bounds,provider=self.provider,
-                                    intensity=self.options.get('intensity','balanced'),cancel=self.cancel)
+                                    intensity=self.options.get('intensity','balanced'),cancel=self.cancel,choose_styles=bool(self.options.get('studio')))
         self.bundle={'analysis_identity':self.analysis['cache_identity'],'ranking':ranked,'timelines':timelines}
         self.progress('Checking the proposed ending against actual source footage',61)
         from .local_tail import review_ending
@@ -60,8 +60,13 @@ class LocalAutoPipelineService(PipelineService):
             if self.options.get('studio'):
                 plan['content_type']='gaming'
                 plan['framing']=self.options.get('framing','fit')
+                plan['output_preset']=self.options.get('output_preset','portrait_1080')
                 plan['required_on_video_text']=rules.get('required_on_video_text',[])
                 profile=self.options.get('editing_profile','automatic')
+                if profile=='automatic':
+                    assessment=next(e for e in timelines['evaluations'] if e['candidate_id']==candidate['id'])
+                    profile=assessment['recommended_style']
+                    plan['semantic_notes'].append('AI Automatic selected '+profile+': '+assessment['rationale'])
                 if profile=='clean':
                     for shot in plan['scenes']: shot.update(effect='none',transition='cut',zoom=1)
                     plan['subtitle_style']='clean'
@@ -74,6 +79,12 @@ class LocalAutoPipelineService(PipelineService):
                 elif profile=='reference' and self.options.get('reference_profile'):
                     reference=self.options['reference_profile']
                     for shot in plan['scenes']: shot['transition']='fade' if reference.get('gentle_transitions') else 'cut'
+                    observations=reference.get('visual_style_observations',[])
+                    if any(o.get('caption_treatment')=='large_bold' for o in observations):plan['subtitle_style']='bold'
+                    else:plan['subtitle_style']='clean'
+                    if any(o.get('visual_treatment')=='high_contrast' for o in observations):
+                        for shot in plan['scenes']:shot.update(effect='contrast',effect_intensity=.4)
+                plan['edit_dna']['visual_effects']={'clean':'Clean Professional: restrained source cuts and readable captions','cinematic':'Cinematic: restrained fades and source-driven motion','gaming':'Gaming Viral: source-driven cuts and contrast'}.get(profile,'Measured reference pacing and supported transitions')
                 plan['semantic_notes'].append('Automatic style follows source-bound pacing; reference features are measurements, not copied audiovisual content.')
             key=str(plan['start'])
             self.bundle['drafts'][key]={'ending_checks':checks,'style':candidate['style']}
@@ -92,12 +103,16 @@ class LocalAutoPipelineService(PipelineService):
         draft=self.bundle.get('drafts',{}).get(str(plan['start']),{})
         metadata_context={**self.analysis,'ending_checks':draft.get('ending_checks',self.bundle.get('ending_checks',[]))}
         if self.options.get('studio'):
-            from .studio_metadata import generate_studio_package
-            used=getattr(self,'used_titles',[])
-            package=generate_studio_package(self.provider,plan,metadata_context,rules,research,used,self.options.get('history'))
-            self.used_titles=[*used,package['recommended']['title']]
-            package['platform']='youtube'
-            draft['hook_candidates']=package['hook_candidates']
+            from .local_hooks import generate_hooks
+            from .local import LocalPipelineService
+            hooks=generate_hooks(self.provider,plan,metadata_context)
+            plan['hook']=hooks['selected'];plan['show_hook']=True
+            draft['hook_candidates']=hooks['candidates']
+            self.bundle.update(research=research,platform='youtube')
+            self.provider.unload()
+            # This temporary source package is replaced after actual-render
+            # observations exist. It is never presented as final AI copy.
+            return LocalPipelineService().generate_metadata(plan,rules)
         else:
             package=generate_package(self.provider,plan,metadata_context,rules,research,self.options.get('platform','youtube'))
         plan['hook']=package['recommended']['opening_hook']
@@ -109,10 +124,54 @@ class LocalAutoPipelineService(PipelineService):
         self.provider.unload()
         return package['metadata']
 
+    def finalize_metadata(self,plan,metadata,evaluation,rules):
+        reviews=evaluation.get('visual',{}).get('individual_sample_reviews',[]) if evaluation else []
+        frames=evaluation.get('visual',{}).get('sampled_frames',[]) if evaluation else []
+        if not reviews or not all(r.get('visible_content') for r in reviews):
+            for block in metadata.values():
+                block['generation_status']='unavailable'
+                for variant in block['variants']:variant['reasoning']='Actual-render content review is unavailable. Enter and review publication text manually.'
+            return metadata
+        from .schemas import ClipPlan,expanded_scenes,output_duration
+        from .studio_metadata import generate_studio_package
+        findings=[];shots=expanded_scenes(ClipPlan.model_validate(plan).scenes)
+        for frame,review in zip(frames,reviews):
+            offset=0;source_time=shots[-1].end-.001
+            for shot in shots:
+                duration=output_duration(shot)
+                if frame['timestamp']<offset+duration:
+                    source_time=min(shot.end-.001,shot.start+max(0,frame['timestamp']-offset)*shot.speed);break
+                offset+=duration
+            findings.append({'timestamp':source_time,'evidence_id':'rendered:'+frame['evidence_id'],
+                'observation':review['visible_content']})
+        context={**self.analysis,'findings':findings,'ending_checks':[],
+            'game_or_topic':self.options.get('game') or rules.get('game_name') or 'Exact game title not established',
+            'topic_uncertainty':'Use only the actual rendered observations below, not overall-source scene guesses.'}
+        self.progress('Writing platform text from actual rendered content',94)
+        try:
+            package=generate_studio_package(self.provider,plan,context,rules,self.bundle.get('research',{}),getattr(self,'used_titles',[]),self.options.get('history'))
+            result=package['metadata']
+            for block in result.values():
+                block['generation_status']='generated'
+                for variant in block['variants']:variant['opening_hook']=plan['hook']
+            plan['title']=package['recommended']['title']
+            self.used_titles=[*getattr(self,'used_titles',[]),plan['title']]
+            return result
+        except Exception as exc:
+            if self.cancel.is_set():raise
+            for block in metadata.values():
+                block['generation_status']='unavailable'
+                for variant in block['variants']:variant['reasoning']='Final metadata generation failed; manual correction required: '+str(exc)[:200]
+            return metadata
+        finally:
+            try:self.provider.unload()
+            except Exception:pass
+
     def render_clip(self,*args,**kwargs):
         if self.cancel.is_set(): raise InferenceCancelled('AUTO CREATE cancelled; original source preserved.')
-        self.progress('Rendering the winning edit with native FFmpeg',76)
+        self.progress('Rendering the edited draft with native FFmpeg',76)
         result=super().render_clip(*args,**kwargs)
+        self.last_render_info=result
         if self.cancel.is_set(): raise InferenceCancelled('AUTO CREATE cancelled; original source preserved.')
         return result
 
@@ -120,10 +179,11 @@ class LocalAutoPipelineService(PipelineService):
         from .viral_score import evaluate_render
         self.progress('Inspecting the actual rendered draft and calculating editorial scores',90)
         try:
-            return evaluate_render(path,plan,metadata,self.provider,self.bundle.get('research'))
+            return evaluate_render(path,plan,metadata,self.provider,self.bundle.get('research'),getattr(self,'last_render_info',None))
         except Exception as exc:
             if self.cancel.is_set():raise
             return {'status':'unavailable','reason':'Actual-render evaluation failed: '+str(exc)[:400],
                 'platforms':{},'suggestions':[],'publish_ready':False}
         finally:
-            self.provider.unload()
+            try:self.provider.unload()
+            except Exception:pass

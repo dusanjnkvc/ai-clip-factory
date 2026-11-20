@@ -56,6 +56,7 @@ class MeasuredFrame(Contract):
     focus_x: float = Field(ge=0, le=1)
     focus_y: float = Field(ge=0, le=1)
     focus_confidence: Literal["low"] = "low"
+    focus_method: str = 'edge_centroid'
 
 
 class AudioSample(Contract):
@@ -233,6 +234,20 @@ def sampling_times(duration: float, scenes: list[dict], count: int) -> list[floa
     return sorted(round(min(max(0, timepoint), max(0, duration - .08)), 4) for timepoint in chosen)
 
 
+def motion_focus(first,second):
+    """Residual optical flow after median camera motion; never semantic tracking."""
+    import cv2,numpy as np
+    flow=cv2.calcOpticalFlowFarneback(first,second,None,.5,3,15,3,5,1.2,0)
+    residual=flow-np.median(flow.reshape(-1,2),axis=0)
+    magnitude=np.linalg.norm(residual,axis=2)
+    weights=np.maximum(0,magnitude-max(.4,float(np.percentile(magnitude,85))))
+    total=float(weights.sum())
+    if total<4:return None
+    height,width=weights.shape
+    return (float((weights*np.arange(width)[None,:]).sum()/total/(width-1)),
+        float((weights*np.arange(height)[:,None]).sum()/total/(height-1)))
+
+
 def sample_frames(path: Path, times: list[float], duration: float, cancel=None, max_side=None) -> tuple[list[dict], list[dict]]:
     cv2, np, *_ = _dependencies()
     capture = cv2.VideoCapture(str(path))
@@ -269,6 +284,15 @@ def sample_frames(path: Path, times: list[float], duration: float, cancel=None, 
             total = float(edges.sum())
             focus_x = float((edges * np.arange(160)[None, :]).sum() / total / 159) if total else .5
             focus_y = float((edges * np.arange(90)[:, None]).sum() / total / 89) if total else .5
+            focus_method='edge_centroid'
+            # Nearby decoded frames measure motion without comparing unrelated
+            # sparse snapshots across scene cuts. The original JPEG stays intact.
+            ok_next,next_frame=capture.read()
+            if ok_next:
+                next_small=cv2.resize(cv2.cvtColor(next_frame,cv2.COLOR_BGR2GRAY),(160,90))
+                movement=motion_focus(small,next_small)
+                if movement:
+                    focus_x,focus_y=movement;focus_method='camera_compensated_residual_optical_flow'
             change = float(np.abs(small.astype(np.float32) - prior).mean() / 255) if prior is not None else 0.0
             prior = small.astype(np.float32)
             encoded, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
@@ -277,6 +301,7 @@ def sample_frames(path: Path, times: list[float], duration: float, cancel=None, 
             frame_hash = hashlib.sha256(jpeg.tobytes()).hexdigest()[:16]
             record = MeasuredFrame(timestamp=round(timestamp, 4), frame_index=index, evidence_id=f"frame:{index}:{frame_hash}", brightness=float(small.mean() / 255), sharpness=float(cv2.Laplacian(gray, cv2.CV_64F).var()), change=change, focus_x=min(1, max(0, focus_x)), focus_y=min(1, max(0, focus_y))).model_dump()
             frames.append(record)
+            record['focus_method']=focus_method
             images.append({"timestamp": record["timestamp"], "data_url": "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode("ascii")})
     finally:
         capture.release()
@@ -480,11 +505,12 @@ class LocalSourceAnalyzer:
         model_digest = status.get("digest")
         if not model_digest:
             raise ConfigurationError("Local model identity is unavailable; analysis was not generated")
-        choices = {"max_frames": _setting("LOCAL_AI_MAX_FRAMES", 12, 1, 48), "batch_size": _setting("LOCAL_AI_FRAME_BATCH_SIZE", 1, 1, 4), "whisper_model": os.getenv("LOCAL_WHISPER_MODEL", "base"), "whisper_device": "cpu", "whisper_compute": "int8", "speech_decode": "ffmpeg_mono_16000_f32le_v1", "scene_detector": "pyscenedetect_content_27", "game": game[:160], "context": context[:4000], "context_size": status.get("context_size"), "analyzer": ANALYZER_VERSION}
+        choices = {"max_frames": _setting("LOCAL_AI_MAX_FRAMES", 12, 1, 48), "batch_size": _setting("LOCAL_AI_FRAME_BATCH_SIZE", 1, 1, 4), "whisper_model": os.getenv("LOCAL_WHISPER_MODEL", "base"), "whisper_device": "cpu", "whisper_compute": "int8", "speech_decode": "ffmpeg_mono_16000_f32le_v1", "scene_detector": "pyscenedetect_content_27", "framing_measurement": "residual_flow_v1", "game": game[:160], "context": context[:4000], "context_size": status.get("context_size"), "analyzer": ANALYZER_VERSION}
         if max_frames is not None:
             if isinstance(max_frames,bool) or not isinstance(max_frames,int) or not 1<=max_frames<=48:
                 raise PipelineError('Frame budget must be an integer from1 to48.')
             choices['max_frames']=max_frames
+        choices['sample_max_side']=512
         source_hash = media.sha256_file(path)
         supplied = _validate_transcript(transcript, info["duration"]) if transcript is not None else None
         identity = hashlib.sha256(json.dumps({"source": source_hash, "model_digest": model_digest, "endpoint": status.get("endpoint"), "settings": choices, "supplied_transcript": supplied}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -499,15 +525,49 @@ class LocalSourceAnalyzer:
             except (ValueError, OSError):
                 pass  # Invalid cache data is recomputed, never accepted as analysis.
         progress("Measured source metadata and file identity", 5)
-        scenes = detect_scenes(path, info["duration"], cancel)
-        progress(f"Measured {len(scenes)} source scenes", 12)
+        reusable=None
+        if self.cache_dir.is_dir():
+            for prior_path in list(self.cache_dir.glob('[0-9a-f]*.json'))[:100]:
+                try:
+                    candidate=SourceAnalysis.model_validate_json(prior_path.read_text(encoding='utf-8'),strict=True)
+                    if candidate.source_sha256==source_hash and candidate.settings.get('scene_detector')==choices['scene_detector'] and candidate.settings.get('analyzer')==choices['analyzer']:
+                        reusable=candidate;break
+                except (OSError,ValueError):continue
+        scenes=[s.model_dump() for s in reusable.scenes] if reusable else detect_scenes(path, info["duration"], cancel)
+        progress(f"{'Reused measured' if reusable else 'Measured'} {len(scenes)} source scenes", 12)
         self.provider.unload()
-        speech = supplied if supplied is not None else transcribe_local(path, info, cancel, progress)
+        speech=supplied
+        speech_settings={k:choices[k] for k in ('whisper_model','whisper_device','whisper_compute','speech_decode')}
+        speech_id=hashlib.sha256(json.dumps({'source':source_hash,'settings':speech_settings},sort_keys=True).encode()).hexdigest()
+        speech_path=self.cache_dir/f'speech-{speech_id}.json'
+        if speech is None:
+            try:
+                cached_speech=json.loads(speech_path.read_text(encoding='utf-8'))
+                if cached_speech['source_sha256']==source_hash and cached_speech['settings']==speech_settings:
+                    speech=_validate_transcript(cached_speech['transcript'],info['duration'])
+            except (OSError,ValueError,KeyError,TypeError):pass
+        if speech is None and self.cache_dir.is_dir():
+            # Migrate reusable actual ASR from an existing visual-analysis cache.
+            # Changing frame budgets does not require another transcription.
+            for previous in list(self.cache_dir.glob('[0-9a-f]*.json'))[:100]:
+                try:
+                    prior=SourceAnalysis.model_validate_json(previous.read_text(encoding='utf-8'),strict=True)
+                    if prior.source_sha256==source_hash and all(prior.settings.get(k)==v for k,v in speech_settings.items()) and prior.transcript.provider.startswith('faster_whisper'):
+                        speech=_validate_transcript(prior.transcript.model_dump(),info['duration']);break
+                except (OSError,ValueError):continue
+        if speech is None:speech=transcribe_local(path,info,cancel,progress)
+        elif supplied is None:progress('Reused validated local speech timings for unchanged source/model',30)
+        if supplied is None:
+            self.cache_dir.mkdir(parents=True,exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=self.cache_dir,suffix='.tmp',delete=False) as stream:
+                json.dump({'source_sha256':source_hash,'settings':speech_settings,'transcript':speech},stream,ensure_ascii=False)
+                speech_temporary=Path(stream.name)
+            os.replace(speech_temporary,speech_path)
         _check(cancel)
         progress("Measuring local source audio", 35)
-        audio = audio_rms(path, info["duration"], cancel) if info["has_audio"] else []
+        audio = [a.model_dump() for a in reusable.audio] if reusable else audio_rms(path, info["duration"], cancel) if info["has_audio"] else []
         times = sampling_times(info["duration"], scenes, choices["max_frames"])
-        frames, images = sample_frames(path, times, info["duration"], cancel)
+        frames, images = sample_frames(path, times, info["duration"], cancel,max_side=512)
         progress(f"Decoded {len(frames)} representative source frames", 42)
         findings, guesses, topic_notes, analysis_notes = [], [], [], []
 

@@ -33,3 +33,5 @@
 .studio details { margin:14px 0; }
 .studio summary { cursor:pointer; }
 .studio hr { border:0; border-top:1px solid var(--border,#39313f); margin:28px 0; }
+.studio input[type="file"] { display:block; padding:14px; border:1px dashed var(--border,#493e54); border-radius:9px; cursor:pointer; }
+.studio input[type="file"]::file-selector-button { background:#292032; color:inherit; border:1px solid #594865; border-radius:6px; padding:7px 11px; margin-right:10px; cursor:pointer; }

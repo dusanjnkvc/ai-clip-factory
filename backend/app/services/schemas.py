@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 PLATFORMS = ("youtube", "tiktok", "instagram")
+OUTPUT_PRESETS = {'portrait_1080': (1080,1920), 'portrait_720': (720,1280), 'square_1080': (1080,1080), 'landscape_1080': (1920,1080)}
 
 
 class Model(BaseModel):
@@ -119,13 +120,49 @@ class Scene(Model):
     crop_x_end: float | None = Field(default=None, ge=0, le=1)
     crop_y_end: float | None = Field(default=None, ge=0, le=1)
     transition: Literal["cut", "fade"] = "cut"
-    effect: Literal["none", "contrast", "retro"] = "none"
+    effect: Literal["none", "contrast", "retro", "flash"] = "none"
+    effect_intensity: float = Field(default=.5,ge=0,le=1)
+    zoom_end: float | None = Field(default=None,ge=1,le=1.5)
+    shake: float = Field(default=0,ge=0,le=.02)
+    speed: float = Field(default=1,ge=.5,le=2)
+    speed_end: float | None = Field(default=None,ge=.5,le=2)
+    freeze: float = Field(default=0,ge=0,le=1)
 
     @model_validator(mode="after")
     def ordered(self):
         if self.end <= self.start:
             raise ValueError("Scene must have positive duration")
         return self
+
+
+def expanded_scenes(scenes):
+    """Four-step rate ramps keep video, audio and caption clocks identical."""
+    result=[]
+    for scene in scenes:
+        if scene.speed_end is None or abs(scene.speed_end-scene.speed)<.001:
+            result.append(scene);continue
+        for i in range(4):
+            start=scene.start+(scene.end-scene.start)*i/4
+            end=scene.start+(scene.end-scene.start)*(i+1)/4
+            data={**scene.model_dump(),'start':start,'end':end,'speed':scene.speed+(scene.speed_end-scene.speed)*(i+.5)/4,
+                'speed_end':None,'freeze':scene.freeze if i==3 else 0,'transition':'cut',
+                'effect':scene.effect if i==0 or scene.effect!='flash' else 'none'}
+            for axis in ('crop_x','crop_y'):
+                endpoint=getattr(scene,axis+'_end')
+                endpoint=getattr(scene,axis) if endpoint is None else endpoint
+                delta=endpoint-getattr(scene,axis)
+                data[axis]=getattr(scene,axis)+delta*i/4
+                data[axis+'_end']=getattr(scene,axis)+delta*(i+1)/4
+            if scene.zoom_end is not None:
+                data['zoom']=scene.zoom+(scene.zoom_end-scene.zoom)*i/4
+                data['zoom_end']=scene.zoom+(scene.zoom_end-scene.zoom)*(i+1)/4
+            result.append(Scene.model_validate(data))
+    if len(result)>32:raise ValueError('Reduce rate ramps: at most32 rendered shot sections are allowed.')
+    return result
+
+
+def output_duration(scene):
+    return (scene.end-scene.start)/scene.speed+scene.freeze
 
 
 class Scores(Model):
@@ -163,6 +200,12 @@ class ManualMetadata(Model):
     hashtags: list[str] = Field(default_factory=list, max_length=30)
 
 
+class SoundCue(Model):
+    kind: Literal['click','soft_whoosh']
+    start: float = Field(ge=0,le=600)
+    volume: float = Field(default=.12,ge=0,le=.3)
+
+
 class ClipPlan(Model):
     title: str = Field(min_length=1, max_length=160)
     start: float = Field(ge=0)
@@ -183,6 +226,7 @@ class ClipPlan(Model):
     manual_metadata: ManualMetadata | None = None
     audio_treatment: Literal["source", "mute"] = "source"
     framing: Literal["crop", "fit"] = "crop"
+    output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
     required_on_video_text: list[str] = Field(default_factory=list, max_length=6)
     audio_volume: float = Field(default=1,ge=0,le=2)
     audio_denoise: bool = False
@@ -191,6 +235,7 @@ class ClipPlan(Model):
     caption_color: str = Field(default='#FFFFFF',pattern='^#[0-9A-Fa-f]{6}$')
     caption_size: int | None = Field(default=None,ge=30,le=100)
     caption_margin: int = Field(default=350,ge=200,le=650)
+    sound_cues: list[SoundCue] = Field(default_factory=list,max_length=6)
 
     @model_validator(mode="after")
     def timeline(self):
@@ -201,9 +246,11 @@ class ClipPlan(Model):
         for scene in self.scenes:
             if scene.start < self.start - .001 or scene.end > self.end + .001:
                 raise ValueError("Scene is outside the selected source range")
-        duration = sum(s.end - s.start for s in self.scenes)
+        duration = sum(output_duration(s) for s in expanded_scenes(self.scenes))
         if any(c.end>duration+.001 for c in self.manual_captions):
             raise ValueError('Manual caption cues use output seconds and must remain inside the rendered duration.')
+        if any(c.start>=duration for c in self.sound_cues):raise ValueError('Sound cues must be inside the rendered output.')
+        if sum(s.effect=='flash' for s in self.scenes)>2:raise ValueError('Use at most two restrained flash accents per clip.')
         if not 1 <= duration <= 600:
             raise ValueError("Rendered timeline must be between one second and ten minutes")
         return self
@@ -226,6 +273,7 @@ class PlatformMetadata(Model):
     variants: list[MetadataVariant] = Field(min_length=3, max_length=3)
     recommended_index: int = Field(ge=0, le=2)
     title_candidates: list[dict] = Field(default_factory=list, max_length=5)
+    generation_status: Literal['unknown','generated','manual','unavailable'] = 'unknown'
 
 
 class Metadata(Model):

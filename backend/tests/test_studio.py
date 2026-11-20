@@ -24,6 +24,7 @@ def test_project_defaults_three_drafts_persist_and_start_is_idempotent(environme
             return sample_metadata()
         def evaluate_render(self,*a,**kw):
             return {'platforms':{},'controlled_test':True}
+        def finalize_metadata(self,*a,**kw):return sample_metadata()
     monkeypatch.setattr('app.services.local_auto.LocalAutoPipelineService',Controlled)
     project=client.post('/api/studio/projects',json={'name':'Three clips','source_id':source,'campaign_id':campaign}).json()
     assert project['options']['duration']==10 and project['options']['clip_count']==3
@@ -39,6 +40,39 @@ def test_project_defaults_three_drafts_persist_and_start_is_idempotent(environme
     response=client.post(f"/api/studio/drafts/{clip['id']}/decision",json={'version':1,'decision':'rejected','note':'Please adjust the framing.'})
     assert response.status_code==200
     assert client.post(f"/api/studio/drafts/{clip['id']}/decision",json={'version':2,'decision':'rejected','note':'Wrong version review.'}).status_code==409
+    assert client.get(f"/api/studio/projects/{project['id']}/export").status_code==409
+    # The generated fixture is ours and contains only known test patterns/audio.
+    review=client.post(f"/api/clips/{clip['id']}/review",json={'note':'Reviewed the actual generated test fixture.',
+        'evidence':{'creative_context':{'confirmed':True,'note':'Only generated test patterns are present; this is controlled contract validation.'}}})
+    assert review.status_code==200 and review.json()['compliance']['status']=='PASS',review.text
+    assert client.post(f"/api/studio/drafts/{clip['id']}/decision",json={'version':1,'decision':'approved','note':'Approved the controlled generated fixture.'}).status_code==200
+    exported=client.get(f"/api/studio/projects/{project['id']}/export")
+    import io,zipfile
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert len([n for n in archive.namelist() if n.endswith('/clip.mp4')])==1
+    changed=client.patch(f"/api/clips/{clip['id']}/metadata",json={'metadata':sample_metadata()})
+    assert changed.status_code==200 and changed.json()['current_version']==2
+    assert client.get(f"/api/studio/projects/{project['id']}/export").status_code==409
+    assert client.post(f"/api/studio/drafts/{clip['id']}/regenerate-component",json={'component':'captions','version':1}).status_code==409
+    response=client.post(f"/api/studio/drafts/{clip['id']}/regenerate-component",json={'component':'captions','version':2})
+    assert response.status_code==200 and response.json()['payload']['plan']['manual_captions']==[]
+
+
+def test_source_proxy_is_rebuildable_without_modifying_original(environment,monkeypatch):
+    client,factory,config=environment;user=register(client);campaign,source=seed_job_data(factory,user['id'],config)
+    enable(monkeypatch)
+    from app.models import SourceVideo
+    from app.storage import local_path
+    from app.services.media import sha256_file
+    with factory() as db:path=local_path(db.get(SourceVideo,source).storage_key)
+    original=sha256_file(path)
+    proxy=client.post(f'/api/studio/sources/{source}/preview')
+    assert proxy.status_code==200,proxy.text
+    assert proxy.json()['media_info']['width']<=720
+    assert client.get(proxy.json()['preview_url']).status_code==200
+    assert sha256_file(path)==original
+    client.delete('/api/studio/cache')
+    assert client.get(proxy.json()['preview_url']).status_code==404 and sha256_file(path)==original
 
 
 def test_directory_import_restricts_paths_and_preserves_original(environment,monkeypatch,tmp_path):

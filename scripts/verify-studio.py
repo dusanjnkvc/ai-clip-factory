@@ -20,7 +20,7 @@ if args.resume:
     if not (output/'studio.db').is_file():parser.error('The resumed directory must contain its existing studio.db.')
 else:output.mkdir(parents=True)
 os.environ.update(FREE_MODE='true',LOCAL_NO_AUTH='true',APP_ENV='development',DATABASE_URL='sqlite:///'+str(output/'studio.db').replace('\\','/'),
-    MEDIA_ROOT=str(output/'media'),OLLAMA_BASE_URL=args.endpoint,OLLAMA_MODEL=args.model,MAX_UPLOAD_MB='1500',LOCAL_AI_MAX_FRAMES=str(args.frames))
+    MEDIA_ROOT=str(output/'media'),OLLAMA_BASE_URL=args.endpoint,OLLAMA_MODEL=args.model,MAX_UPLOAD_MB='1500',LOCAL_AI_MAX_FRAMES=str(args.frames),LOCAL_AI_FRAME_OVERRIDE='true')
 from faster_whisper.utils import download_model
 os.environ['LOCAL_WHISPER_MODEL']=download_model('base',cache_dir=str(root/'.runtime/local-ultimate-media/models/faster-whisper'),local_files_only=True)
 sys.path.insert(0,str(root/'backend'))

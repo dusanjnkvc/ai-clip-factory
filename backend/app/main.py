@@ -30,6 +30,7 @@ from .request_limits import RequestBodyLimitMiddleware
 from .usage import record_usage
 from .services.media import ConfigurationError, PipelineError
 from .runtime import free_mode, local_no_auth, create_pipeline_service, social_enabled
+import httpx
 
 
 @asynccontextmanager
@@ -54,6 +55,15 @@ async def provider_configuration_error(_, exc):
 @app.exception_handler(PipelineError)
 async def pipeline_error(_, exc):
     return JSONResponse(status_code=502, content={'detail':str(exc)[:1200]})
+
+@app.exception_handler(httpx.HTTPError)
+async def external_service_error(_, exc):
+    status=exc.response.status_code if isinstance(exc,httpx.HTTPStatusError) else None
+    detail=('The provider rejected authorization. Reconnect the account and check granted permissions.' if status in {401,403}
+        else 'The provider quota or rate limit was reached. Retry later.' if status==429
+        else 'The local model or optional platform service is unavailable. Check its status and retry.')
+    # Provider errors can contain signed upload URLs and tokens; never echo them.
+    return JSONResponse(status_code=503 if status==429 or status is None else 502,content={'detail':detail})
 
 def public_time(value):
     return value.isoformat() + 'Z' if value else None
@@ -417,8 +427,8 @@ def jobs(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
 @app.post('/api/jobs/{job_id}/retry')
 def retry_job(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     job = owned(db,ProcessingJob,job_id,user)
-    if job.status not in {'failed','blocked'} or job.attempts>=3:
-        raise HTTPException(409,'Only failed or blocked jobs with fewer than 3 attempts can resume.')
+    if job.status not in {'failed','blocked','cancelled'} or job.attempts>=3:
+        raise HTTPException(409,'Only stopped jobs with fewer than 3 attempts can resume.')
     if free_mode() and not (job.payload.get('manual_selection') or job.payload.get('plan') or job.payload.get('processing_provider')=='local_ai'):
         raise HTTPException(422,'This old AI job has no manual selection. Create a new free local render with start/end times.')
     if not free_mode():
@@ -426,6 +436,7 @@ def retry_job(job_id: str,user: User=Depends(current_user),db: DBSession=Depends
     job.status='queued'
     job.stage='Resuming persisted work'
     job.error=None
+    job.payload={**job.payload,'cancel_requested':False}
     audit(db,user.id,'job.retried',job.id)
     db.commit()
     return obj(job)
@@ -506,6 +517,8 @@ def update_metadata(clip_id: str,body: ClipMetadataUpdate,user: User=Depends(cur
         raise HTTPException(422,'Metadata must contain three complete validated variants for each platform.')
     plan=db.get(EditingPlan,clip.editing_plan_id)
     clip.metadata_json=validated
+    chosen=validated['youtube']
+    clip.title=chosen['variants'][chosen['recommended_index']]['title']
     clip.current_version+=1
     clip.draft_approved=False
     previous_score=db.scalar(select(DraftEvaluation).where(DraftEvaluation.clip_id==clip.id,DraftEvaluation.version==clip.current_version-1).order_by(DraftEvaluation.created_at.desc()))
@@ -778,7 +791,11 @@ def metrics(db,user):
         latest=db.scalar(select(AnalyticsSnapshot).where(AnalyticsSnapshot.post_id==post.id).order_by(AnalyticsSnapshot.created_at.desc()).limit(1))
         if latest:
             total_views+=latest.reported_views
-    return {'active_campaigns':count(Campaign,Campaign.status.in_(['active','review'])),'clips_generated':count(RenderedClip),'processing_jobs':count(ProcessingJob,ProcessingJob.status.in_(['queued','processing'])),
+    approved=db.scalar(select(func.count()).select_from(RenderedClip).where(RenderedClip.user_id==user.id,RenderedClip.status=='approved')) or 0
+    return {'projects':count(FactoryProject),'videos_imported':count(SourceVideo),
+        'videos_analyzed':db.scalar(select(func.count(func.distinct(ProcessingJob.source_id))).where(ProcessingJob.user_id==user.id,ProcessingJob.status=='completed')) or 0,
+        'approved_drafts':approved,'failed_jobs':count(ProcessingJob,ProcessingJob.status.in_(['failed','blocked'])),
+        'active_campaigns':count(Campaign,Campaign.status.in_(['active','review'])),'clips_generated':count(RenderedClip),'processing_jobs':count(ProcessingJob,ProcessingJob.status.in_(['queued','processing'])),
         'ready_to_publish':count(RenderedClip,RenderedClip.status=='ready'),'scheduled':count(PublishingJob,PublishingJob.status=='queued',PublishingJob.scheduled_at.is_not(None)),
         'published':count(PublishedPost),'pending_submissions':count(CampaignSubmission,CampaignSubmission.status.in_(['pending','submitted'])),'approved_submissions':count(CampaignSubmission,CampaignSubmission.status=='approved'),
         'rejected_submissions':count(CampaignSubmission,CampaignSubmission.status=='rejected'),'reported_views':total_views,'estimated_earnings':amount('estimated'),'confirmed_earnings':amount('confirmed'),'paid_earnings':amount('paid'),
@@ -787,7 +804,11 @@ def metrics(db,user):
 
 @app.get('/api/dashboard')
 def dashboard(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
-    return {'metrics':metrics(db,user),'recent_jobs':jobs(user,db)[:5],'campaigns':campaigns(user,db)[:5],'clips':clips(user,db)[:6],'configuration':configuration()}
+    from .performance import dashboard_data
+    end=datetime.now(timezone.utc).date();start=end-timedelta(days=29)
+    performance={p:dashboard_data(db,user,start,end,p) for p in ('youtube','tiktok')}
+    return {'metrics':metrics(db,user),'recent_jobs':jobs(user,db)[:5],'campaigns':campaigns(user,db)[:5],'clips':clips(user,db)[:6],'configuration':configuration(),
+        'platform_performance':{p:{'lifetime_views':v['lifetime_views'],'period_views':v['period_views'],'range':v['range'],'best_performing':v['best_performing']} for p,v in performance.items()}}
 
 @app.get('/api/analytics')
 def analytics(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
@@ -913,6 +934,7 @@ class AutoCreate(BaseModel):
     processing_mode: Literal['fast','balanced','quality'] = 'balanced'
     editing_profile: Literal['automatic','gaming','cinematic','clean','reference'] = 'automatic'
     framing: Literal['fit','crop'] = 'fit'
+    output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
     reference_profile: dict | None = None
 
 @app.post('/api/auto/jobs')

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .schemas import CampaignRules, ClipPlan, Metadata, PLATFORMS
+from .schemas import CampaignRules, ClipPlan, Metadata, PLATFORMS,OUTPUT_PRESETS
 
 
 def check_compliance(
@@ -42,8 +42,9 @@ def check_compliance(
         add("duration", "FAIL", f"{duration:.2f}s exceeds the campaign maximum {campaign.max_duration:.2f}s.")
     else:
         add("duration", "PASS", f"Rendered duration is {duration:.2f}s; no supplied duration bound is violated.")
-    valid_media = render_info.get("width") == 1080 and render_info.get("height") == 1920 and render_info.get("has_audio") is True and render_info.get("decode_verified") is True and render_info.get("codec") in {"h264", "avc1"}
-    add("video_format", "PASS" if valid_media else "FAIL", "Decoded 1080 × 1920 H.264 video with audio." if valid_media else "A verified playable 1080 × 1920 H.264 render with audio is required.")
+    expected=OUTPUT_PRESETS[clip.output_preset]
+    valid_media = (render_info.get('width'),render_info.get('height'))==expected and render_info.get("has_audio") is True and render_info.get("decode_verified") is True and render_info.get("codec") in {"h264", "avc1"}
+    add("video_format", "PASS" if valid_media else "FAIL", f"Verified H.264 with audio required at selected {expected[0]} × {expected[1]} resolution.")
     if clip.subtitles_enabled and clip.transcript_excerpt.strip():
         timing = "Supplied subtitle cue timestamps are mapped through the editing timeline; word alignment was not inferred." if render_info.get("subtitle_timing") == "cue" else "Subtitles use provider word timestamps mapped through the editing timeline."
         add("subtitle_sync", "PASS" if render_info.get("subtitle_synchronized") is True else "FAIL", timing if render_info.get("subtitle_synchronized") else "Speech was selected but synchronized subtitles were not verified.")
@@ -55,6 +56,13 @@ def check_compliance(
     for platform in campaign.allowed_platforms or PLATFORMS:
         platform_meta = getattr(meta, platform)
         chosen = platform_meta.variants[platform_meta.recommended_index]
+        from .publication_text import publication_text
+        final_text=publication_text(chosen.model_dump(),platform)
+        length=len(final_text.encode('utf-16-le'))//2 if platform=='tiktok' else len(final_text)
+        limit=2200 if platform=='tiktok' else 5000
+        add('publication_length_'+platform,'PASS' if length<=limit else 'FAIL',f'Combined publication text and hashtags: {length}/{limit}.')
+        if platform_meta.generation_status=='unavailable':
+            add('metadata_generation_'+platform,'FAIL','Final publication text is unavailable. Enter and save reviewed text before approval.')
         text = " ".join([chosen.title, chosen.description, chosen.caption, " ".join(chosen.hashtags)])
         missing = []
         for value in campaign.required_hashtags + campaign.required_mentions:

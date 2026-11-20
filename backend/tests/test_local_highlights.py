@@ -48,6 +48,14 @@ def test_visual_evidence_beats_a_louder_static_menu_under_default_rubric():
     assert "loudness" in best["factors"]["audio"]["explanation"].lower()
 
 
+def test_alternate_windows_around_one_finding_are_not_separate_moments():
+    result=rank_highlights(source_analysis(),rules(),target_duration=10)
+    candidates=result['candidates']
+    assert len(candidates)==3
+    for i,candidate in enumerate(candidates):
+        assert all(not set(candidate['evidence_ids']).intersection(other['evidence_ids']) for other in candidates[i+1:])
+
+
 def test_long_source_offers_three_distinct_source_ordered_bounded_windows():
     result = rank_highlights(source_analysis(), rules())
     candidates = result["candidates"]

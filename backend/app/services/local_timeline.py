@@ -31,10 +31,12 @@ class EvaluationBatch(Contract):
     evaluations: list[Evaluation] = Field(min_length=1, max_length=3)
 
 
-def evaluation_schema(candidate_ids: list[str]) -> type[EvaluationBatch]:
+def evaluation_schema(candidate_ids: list[str],choose_styles=False) -> type[EvaluationBatch]:
     if not 1 <= len(candidate_ids) <= 3 or len(set(candidate_ids)) != len(candidate_ids):
         raise PipelineError("Timeline evaluation needs one to three distinct eligible candidate IDs")
-    bounded = create_model("EligibleTimelineEvaluation", __base__=Evaluation, candidate_id=(Literal[tuple(candidate_ids)], ...))
+    fields={'candidate_id':(Literal[tuple(candidate_ids)],...)}
+    if choose_styles:fields['recommended_style']=(Literal['gaming','cinematic','clean'],...)
+    bounded = create_model("EligibleTimelineEvaluation", __base__=Evaluation, **fields)
     return create_model("BoundedTimelineEvaluations", __base__=EvaluationBatch, evaluations=(list[bounded], Field(min_length=len(candidate_ids), max_length=len(candidate_ids))))
 
 
@@ -103,7 +105,7 @@ def _validate_ranking(analysis: SourceAnalysis, raw: dict) -> HighlightRanking:
             raise PipelineError("A highlight cites unavailable evidence or evidence outside its source range")
         if set(candidate.scores) != set(FACTORS) or set(candidate.factors) != set(FACTORS):
             raise PipelineError("A highlight must retain all eight explainable scoring factors")
-        if any(max(0.0, min(candidate.end, previous.end) - max(candidate.start, previous.start)) / min(candidate.end - candidate.start, previous.end - previous.start) > .55 for previous in windows):
+        if any(set(candidate.evidence_ids).intersection(previous.evidence_ids) or max(0.0, min(candidate.end, previous.end) - max(candidate.start, previous.start)) / min(candidate.end - candidate.start, previous.end - previous.start) > .55 for previous in windows):
             raise PipelineError("Near-duplicate source windows cannot become separate candidate edits")
         seen.add(candidate.id)
         windows.append(candidate)
@@ -181,7 +183,7 @@ def assemble_candidates(analysis: SourceAnalysis | dict, ranking: dict, rules: d
     return candidates
 
 
-def build_timelines(analysis: SourceAnalysis | dict, ranking: dict, rules: dict | None = None, *, provider=None, intensity: str = "balanced", cancel=None) -> dict:
+def build_timelines(analysis: SourceAnalysis | dict, ranking: dict, rules: dict | None = None, *, provider=None, intensity: str = "balanced", cancel=None,choose_styles=False) -> dict:
     measured = _validated_analysis(analysis)
     _check_cancel(cancel)
     candidates = assemble_candidates(measured, ranking, rules, intensity=intensity)
@@ -193,10 +195,11 @@ def build_timelines(analysis: SourceAnalysis | dict, ranking: dict, rules: dict 
         plan = candidate["plan"]
         cited = [item for item in measured.findings if item.evidence_id in candidate["evidence_ids"]]
         compact.append({"id": candidate["id"], "style": candidate["style"], "range": [plan["start"], plan["end"]], "shots": [[shot["start"], shot["end"]] for shot in plan["scenes"]], "hook": plan["hook"], "hook_origin": candidate["hook_origin"], "source_observations": [{"timestamp": item.timestamp, "observation": _short_literal(item.observation, 180), "uncertainty": _short_literal(item.uncertainty, 100)} for item in cited[:2]], "actual_speech_excerpt": _short_literal(plan["transcript_excerpt"], 300), "heuristic_score": candidate["rank_score"]})
-    response = evaluator.structured(evaluation_schema([candidate["id"] for candidate in candidates]), "Evaluate ONLY the supplied candidate edits against their actual source evidence. Give exactly one assessment per allowed candidate ID. Prefer truthful readable hooks, continuity, useful source action, and supported context. A sparse frame does not establish a kill, win, reaction, product claim, or payoff. Do not reward invented claims or predict views. Scores are uncertain editorial heuristics, not campaign approval. Keep each rationale and uncertainty under 20 words.", json.dumps({"source_topic_untrusted": measured.game_or_topic, "topic_uncertainty": measured.topic_uncertainty, "candidates": compact, "campaign_semantics": "Require human review; numeric/automation boundaries were validated separately."}, ensure_ascii=False))
+    style_instruction=' Also choose recommended_style for each actual candidate: gaming for clearly energetic source action, cinematic for source-supported visual storytelling, or clean for readable restrained editing. Do not force different styles when content does not support them.' if choose_styles else ''
+    response = evaluator.structured(evaluation_schema([candidate["id"] for candidate in candidates],choose_styles), "Evaluate ONLY the supplied candidate edits against their actual source evidence. Give exactly one assessment per allowed candidate ID. Prefer truthful readable hooks, continuity, useful source action, and supported context. A sparse frame does not establish a kill, win, reaction, product claim, or payoff. Do not reward invented claims or predict views. Scores are uncertain editorial heuristics, not campaign approval. Keep each rationale and uncertainty under 20 words."+style_instruction, json.dumps({"source_topic_untrusted": measured.game_or_topic, "topic_uncertainty": measured.topic_uncertainty, "candidates": compact, "campaign_semantics": "Require human review; numeric/automation boundaries were validated separately."}, ensure_ascii=False))
     _check_cancel(cancel)
     try:
-        evaluated = evaluation_schema([candidate["id"] for candidate in candidates]).model_validate(response.model_dump(), strict=True)
+        evaluated = evaluation_schema([candidate["id"] for candidate in candidates],choose_styles).model_validate(response.model_dump(), strict=True)
     except (ValidationError, ValueError, TypeError) as exc:
         raise PipelineError("Local model timeline evaluation failed its eligible-candidate boundary") from exc
     by_id = {item.candidate_id: item for item in evaluated.evaluations}

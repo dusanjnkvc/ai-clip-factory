@@ -30,3 +30,17 @@ def test_exact_campaign_title_overrides_five_alternative_titles():
         {'required_title':'Exact mandatory title'},{'status':'unavailable'})
     assert package['recommended']['title']=='Exact mandatory title'
     assert len(package['metadata']['youtube']['title_candidates'])==1
+
+
+def test_final_text_deduplicates_embedded_tags_and_checks_combined_limits():
+    from app.services.publication_text import publication_text
+    from app.services.compliance import check_compliance
+    from test_pipeline import sample_metadata
+    meta=sample_metadata()
+    value=meta['tiktok']['variants'][0]
+    value.update(caption='Review #Mandatory',hashtags=['#Mandatory','#Other'])
+    assert publication_text(value,'tiktok')=='Review #Mandatory\n\n#Other'
+    value.update(caption='x'*2199,hashtags=['#Mandatory'])
+    meta['tiktok']['recommended_index']=0
+    checks=check_compliance(sample_plan(),meta,{},True,{'width':1080,'height':1920,'duration':2,'has_audio':True,'decode_verified':True,'codec':'h264'})['checks']
+    assert next(c for c in checks if c['rule']=='publication_length_tiktok')['status']=='FAIL'

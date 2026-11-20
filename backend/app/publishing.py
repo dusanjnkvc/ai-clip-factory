@@ -147,10 +147,8 @@ def publish_youtube(db, job):
         session_url = state.get('session_url')
         if not session_url:
             title = str(meta.get('title') or clip.title)[:100]
-            description = str(meta.get('description') or meta.get('caption') or '')
-            hashtags = meta.get('hashtags', [])
-            if hashtags:
-                description += '\n\n' + ' '.join(hashtags)
+            from .services.publication_text import publication_text
+            description=publication_text(meta,'youtube')
             if len(description)>5000: raise ValueError('Publication description exceeds YouTube limits; review mandatory text.')
             response = client.post('https://www.googleapis.com/upload/youtube/v3/videos', params={'part':'snippet,status','uploadType':'resumable'}, headers={'Authorization':f'Bearer {token}','X-Upload-Content-Type':'video/mp4','X-Upload-Content-Length':str(path.stat().st_size)}, json={'snippet':{'title':title,'description':description,'categoryId':'20' if plan.plan.get('content_type')=='gaming' else '22'},'status':{'privacyStatus':job.privacy,'selfDeclaredMadeForKids':bool(state.get('made_for_kids'))}})
             response.raise_for_status()

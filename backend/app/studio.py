@@ -53,6 +53,7 @@ class ProjectInput(BaseModel):
     processing_mode: str=Field(default='balanced',pattern='^(fast|balanced|quality)$')
     editing_profile: str=Field(default='automatic',pattern='^(automatic|gaming|cinematic|clean|reference)$')
     framing: str=Field(default='fit',pattern='^(fit|crop)$')
+    output_preset: str=Field(default='portrait_1080',pattern='^(portrait_1080|portrait_720|square_1080|landscape_1080)$')
 
     @model_validator(mode='after')
     def duration_bounds(self):
@@ -169,19 +170,41 @@ class ReferenceInput(BaseModel):
     name: str=Field(min_length=1,max_length=200)
 
 
+@router.post('/sources/{source_id}/preview')
+def prepare_preview(source_id: str,user: User=Depends(current_user),db: Session=Depends(get_db)):
+    source=owner(db,SourceVideo,source_id,user)
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'Finish or cancel local processing before building a preview.')
+    from .storage import local_path
+    from .services.source_preview import build_preview
+    target=local_path(f'preview-cache/{source.sha256}-720-v1.mp4')
+    with materialize(source.storage_key) as path:info=build_preview(path,target)
+    return {'preview_url':f'/api/studio/sources/{source.id}/preview','media_info':info,'basis':'720-pixel local proxy of the original; no edits applied.'}
+
+
+@router.get('/sources/{source_id}/preview')
+def source_preview(source_id: str,user: User=Depends(current_user),db: Session=Depends(get_db)):
+    source=owner(db,SourceVideo,source_id,user)
+    from .storage import local_path
+    path=local_path(f'preview-cache/{source.sha256}-720-v1.mp4')
+    if not path.is_file():raise HTTPException(404,'Build the local original preview first.')
+    return FileResponse(path,media_type='video/mp4')
+
+
 @router.post('/references')
 def reference(body: ReferenceInput,user: User=Depends(current_user),db: Session=Depends(get_db)):
     source=owner(db,SourceVideo,body.source_id,user)
-    from .services.local_analysis import detect_scenes,sample_frames,sampling_times
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'Finish or cancel active local processing before reference analysis.')
+    from .services.reference_style import measure_reference
+    from .services.ollama_provider import OllamaProvider
+    provider=OllamaProvider();provider.keep_alive_seconds=60
     with materialize(source.storage_key) as path:
-        duration=source.media_info['duration']
-        cuts=detect_scenes(Path(path),duration)
-        frames,_=sample_frames(Path(path),sampling_times(duration,cuts,6),duration)
-    lengths=[c['end']-c['start'] for c in cuts]
-    profile={'source_sha256':source.sha256,'cut_count':len(cuts),'median_shot_seconds':median(lengths) if lengths else duration,
-        'frame_samples':frames,'gentle_transitions':median(lengths)>4 if lengths else True,
-        'unavailable':['Semantic caption font/effect/zoom/sound-event recognition','Continuous subject tracking'],
-        'method':'actual_source_scene_and_sampled_pixel_measurements','rights':'Reference audiovisual content is not inserted into exports.'}
+        try:profile=measure_reference(Path(path),source.media_info,provider if provider.status(require_vision=True).get('available') else None)
+        finally:
+            try:provider.unload()
+            except Exception:pass
+    profile['source_sha256']=source.sha256
     row=ReferenceStyle(user_id=user.id,source_id=source.id,name=body.name,profile=profile)
     db.add(row);db.commit();return row_json(row)
 
@@ -257,6 +280,78 @@ def improve(clip_id: str,user: User=Depends(current_user),db: Session=Depends(ge
         elif suggestion['action']=='shorten_hook': plan['hook']=plan['hook'][:65].rsplit(' ',1)[0]
     from .main import regenerate_clip,RegenerateRequest
     return regenerate_clip(clip.id,RegenerateRequest(plan=plan),user,db)
+
+
+class ComponentRequest(BaseModel):
+    component: str=Field(pattern='^(titles|metadata|hook|captions|effects)$')
+    version: int
+
+
+@router.post('/drafts/{clip_id}/regenerate-component')
+def regenerate_component(clip_id: str,body: ComponentRequest,user: User=Depends(current_user),db: Session=Depends(get_db)):
+    clip=owner(db,RenderedClip,clip_id,user)
+    if clip.current_version!=body.version:raise HTTPException(409,'Draft changed; review the current version.')
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'Finish or cancel active processing before regenerating a component.')
+    import copy
+    plan=copy.deepcopy(db.get(EditingPlan,clip.editing_plan_id).plan)
+    from .main import regenerate_clip,RegenerateRequest,update_metadata,ClipMetadataUpdate
+    if body.component=='captions':
+        plan['manual_captions']=[];plan['subtitles_enabled']=True
+        return regenerate_clip(clip.id,RegenerateRequest(plan=plan),user,db)
+    from .services.ollama_provider import OllamaProvider
+    from .services.studio_metadata import rendered_context,generate_studio_package,generate_titles
+    from .services.campaign_requirements import enforce_metadata
+    from .services.local_hooks import generate_hooks
+    from .services.viral_score import evaluate_render
+    from .services.local_analysis import Contract
+    provider=OllamaProvider();provider.keep_alive_seconds=60
+    try:
+        score=db.scalar(select(DraftEvaluation).where(DraftEvaluation.clip_id==clip.id,DraftEvaluation.version==clip.current_version).order_by(DraftEvaluation.created_at.desc()))
+        evaluation=score.evaluation if score else None
+        original_job=db.get(ProcessingJob,clip.job_id);options=original_job.payload.get('options',{})
+        rules=db.get(EditingPlan,clip.editing_plan_id).rules_snapshot
+        context=rendered_context(plan,evaluation,options.get('game') or rules.get('game_name'))
+        if context is None:
+            source=owner(db,SourceVideo,clip.source_id,user)
+            render_info={**clip.media_info,'source_aspect_ratio':source.media_info['width']/source.media_info['height']}
+            with materialize(clip.storage_key) as path:evaluation=evaluate_render(path,plan,clip.metadata_json,provider,render_info=render_info)
+            context=rendered_context(plan,evaluation,options.get('game') or rules.get('game_name'))
+            db.add(DraftEvaluation(clip_id=clip.id,version=clip.current_version,artifact_sha256=evaluation['visual']['artifact_sha256'],evaluation=evaluation));db.commit()
+        metadata=copy.deepcopy(clip.metadata_json)
+        if body.component=='titles':
+            titles=generate_titles(provider,plan,context,rules)
+            block=metadata['youtube'];block['title_candidates']=titles;block['generation_status']='generated'
+            index=block['recommended_index'];block['variants'][index]=enforce_metadata({**block['variants'][index],'title':titles[0]['title']},rules)
+            return update_metadata(clip.id,ClipMetadataUpdate(metadata=metadata),user,db)
+        if body.component=='metadata':
+            research=original_job.payload.get('auto_result',{}).get('research',{'status':'unavailable'})
+            metadata=generate_studio_package(provider,plan,context,rules,research)['metadata']
+            for block in metadata.values():
+                block['generation_status']='generated'
+                for variant in block['variants']:variant['opening_hook']=plan['hook']
+            return update_metadata(clip.id,ClipMetadataUpdate(metadata=metadata),user,db)
+        if body.component=='hook':
+            hooks=generate_hooks(provider,plan,context);plan['hook']=hooks['selected']
+            for block in metadata.values():
+                for variant in block['variants']:variant['opening_hook']=plan['hook']
+        else:
+            from typing import Literal
+            class StyleChoice(Contract):
+                style: Literal['clean','gaming','cinematic']
+                reason: str=Field(max_length=150)
+            choice=provider.structured(StyleChoice,'Choose restrained clean, gaming or cinematic editing for only these actual rendered observations. Do not invent action, outcomes or assets.',json.dumps(context))
+            for scene in plan['scenes']:
+                scene['effect']='contrast' if choice.style=='gaming' else 'none'
+                scene['transition']='fade' if choice.style=='cinematic' else 'cut'
+                scene['effect_intensity']=.4;scene['shake']=0
+            plan['edit_dna']['visual_effects']=choice.style+': '+choice.reason
+        queued=regenerate_clip(clip.id,RegenerateRequest(plan=plan),user,db)
+        job=db.get(ProcessingJob,queued['id']);job.payload={**job.payload,'metadata':metadata};db.commit()
+        return queued
+    finally:
+        try:provider.unload()
+        except Exception:pass
 
 
 @router.get('/projects/{project_id}/advisor')

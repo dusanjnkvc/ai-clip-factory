@@ -195,9 +195,8 @@ def publish_tiktok(db,job):
         if clip.media_info['duration']>info.get('max_video_post_duration_sec',0):raise ValueError('Draft exceeds the current TikTok creator duration limit.')
         if privacy!='SELF_ONLY' and os.getenv('TIKTOK_DIRECT_POST_AUDITED','false').lower()!='true':raise ValueError('Public Direct Post requires official TikTok audit.')
         meta=selected_metadata(clip.metadata_json,'tiktok')
-        caption=meta.get('caption') or meta.get('description','')
-        missing=[tag for tag in meta.get('hashtags',[]) if tag not in caption.split()]
-        if missing:caption=(caption+'\n'+' '.join(missing)).strip()
+        from .services.publication_text import publication_text
+        caption=publication_text(meta,'tiktok')
         if len(caption.encode('utf-16-le'))//2>2200:raise ValueError('TikTok caption exceeds2200 UTF-16 units; review required text.')
         with materialize(clip.storage_key) as path:
             size=path.stat().st_size;chunk=min(size,10*1024*1024);count=max(1,size//chunk)

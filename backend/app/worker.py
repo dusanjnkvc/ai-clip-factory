@@ -151,6 +151,13 @@ def process_job(job_id):
                         metadata = metadata_future.result()
                 record_usage(db, service, job.user_id, job.id)
                 evaluation=service.evaluate_render(output,plan_row.plan,metadata) if auto and options.get('studio') else None
+                if auto and options.get('studio') and not job.payload.get('metadata'):
+                    metadata=service.finalize_metadata(plan_row.plan,metadata,evaluation,rules)
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(plan_row,'plan')
+                    if evaluation and evaluation.get('visual'):
+                        from .services.viral_score import score_metadata
+                        evaluation={**evaluation,'platforms':score_metadata(evaluation['visual'],metadata,service.bundle.get('research'))}
                 compliance = service.check_compliance(plan_row.plan, metadata, rules, rights_payload, render, draft_approved=False)
                 target_id = job.payload.get('clip_id')
                 clip = db.get(RenderedClip, target_id) if target_id else None
