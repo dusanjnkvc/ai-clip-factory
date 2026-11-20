@@ -17,4 +17,4 @@ def test_existing_data_survives_studio_migration(tmp_path):
     with sqlite3.connect(target) as db:
         assert db.execute('SELECT name FROM users WHERE id=?',('preserved-owner',)).fetchone()==('Existing creator',)
         tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {'factory_projects','reference_styles','draft_evaluations','draft_decisions','platform_observations'}<=tables
+        assert {'factory_projects','reference_styles','draft_evaluations','draft_decisions','platform_observations','account_observations'}<=tables

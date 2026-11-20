@@ -19,6 +19,30 @@ def setup_social(monkeypatch):
     monkeypatch.setenv('TIKTOK_DIRECT_POST_AUDITED','false')
 
 
+def test_inbox_delivery_uses_upload_scope_and_never_invents_a_public_post(environment,monkeypatch):
+    client,factory,config=environment;user=register(client);setup_social(monkeypatch)
+    clip_id,account_id=seed_clip(factory,user['id'],config)
+    with factory() as db:
+        account=db.get(ConnectedAccount,account_id);account.scopes=['user.info.basic','video.upload'];db.commit()
+    endpoints=[]
+    def request(endpoint,*args,**kwargs):
+        endpoints.append(endpoint)
+        if endpoint.endswith('init/'):
+            assert endpoint=='post/publish/inbox/video/init/'
+            assert 'post_info' not in kwargs['json']
+            return {'publish_id':'controlled-inbox','upload_url':'https://upload.tiktokapis.com/controlled'}
+        return {'status':'SEND_TO_USER_INBOX'}
+    monkeypatch.setattr(social,'tiktok_request',request)
+    original=httpx.Client
+    monkeypatch.setattr(social.httpx,'Client',lambda **kw:original(transport=httpx.MockTransport(lambda req:httpx.Response(201)),**kw))
+    response=client.post(f'/api/social/clips/{clip_id}/tiktok',json={'account_id':account_id,'version':1,'explicit_authorization':True,'delivery':'inbox','privacy_level':'SELF_ONLY','consent_to_music_usage':True,'brand_content_toggle':False,'brand_organic_toggle':False})
+    assert response.status_code==200,response.text
+    with factory() as db:
+        job=db.get(PublishingJob,response.json()['id']);social.publish_tiktok(db,job)
+        assert job.status=='uploaded_draft' and db.scalar(select(PublishedPost.id)) is None
+    assert 'post/publish/creator_info/query/' not in endpoints
+
+
 def seed_clip(factory,user_id,config):
     campaign,source=seed_job_data(factory,user_id,config)
     from app.models import ProcessingJob,Campaign,SourceVideo

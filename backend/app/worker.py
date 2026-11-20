@@ -151,6 +151,8 @@ def process_job(job_id):
                         metadata = metadata_future.result()
                 record_usage(db, service, job.user_id, job.id)
                 evaluation=service.evaluate_render(output,plan_row.plan,metadata) if auto and options.get('studio') else None
+                if auto and options.get('studio') and not job.payload.get('metadata') and evaluation:
+                    render,evaluation=service.polish_render(source_path,plan_row.plan,transcript,output,render,metadata,evaluation,job.mode)
                 if auto and options.get('studio') and not job.payload.get('metadata'):
                     metadata=service.finalize_metadata(plan_row.plan,metadata,evaluation,rules)
                     from sqlalchemy.orm.attributes import flag_modified
@@ -235,6 +237,9 @@ def main():
             continue
         if run_once():
             continue
+        from .performance import sync_idle_account
+        with SessionLocal() as db:
+            if sync_idle_account(db):continue
         time.sleep(2)
 
 if __name__ == '__main__':

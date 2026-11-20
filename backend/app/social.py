@@ -62,8 +62,12 @@ def tiktok_token(db,account):
     credentials=json.loads(cipher().decrypt(account.encrypted_credentials.encode()))
     if credentials.get('expires_at',0)>time.time()+60:
         return credentials['access_token']
-    updated=tiktok_request('oauth/token/',data={'client_key':os.environ['TIKTOK_CLIENT_KEY'],
-        'client_secret':os.environ['TIKTOK_CLIENT_SECRET'],'grant_type':'refresh_token','refresh_token':credentials['refresh_token']})
+    try:
+        if not credentials.get('refresh_token'):raise HTTPException(409,'Reconnect TikTok to grant offline account access.')
+        updated=tiktok_request('oauth/token/',data={'client_key':os.environ['TIKTOK_CLIENT_KEY'],
+            'client_secret':os.environ['TIKTOK_CLIENT_SECRET'],'grant_type':'refresh_token','refresh_token':credentials['refresh_token']})
+    except (HTTPException,httpx.HTTPStatusError):
+        account.status='reauthorization_required';db.commit();raise
     updated['expires_at']=time.time()+updated.get('expires_in',0)
     updated.setdefault('refresh_token',credentials['refresh_token'])
     account.encrypted_credentials=cipher().encrypt(json.dumps(updated).encode()).decode();db.commit()
@@ -74,6 +78,10 @@ def tiktok_token(db,account):
 def configuration(user: User=Depends(current_user)):
     from .publishing import configured
     return {'enabled':social_enabled(),'youtube_configured':configured(),'tiktok_configured':tiktok_configured(),
+        'missing_configuration':{p:[k for k in fields if not os.getenv(k)] for p,fields in {
+            'youtube':('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'),
+            'tiktok':('TIKTOK_CLIENT_KEY','TIKTOK_CLIENT_SECRET','TIKTOK_REDIRECT_URI','TOKEN_ENCRYPTION_KEY')}.items()},
+        'redirects':{'youtube':os.getenv('YOUTUBE_REDIRECT_URI',''),'tiktok':os.getenv('TIKTOK_REDIRECT_URI','')},
         'tiktok_public_posting_audit_confirmed':os.getenv('TIKTOK_DIRECT_POST_AUDITED','false').lower()=='true',
         'limitation':'Developer app credentials, approved scopes and platform review may be required. Unauthenticated tests are not real publishing. Offline editing requires no connected account.'}
 
@@ -128,6 +136,7 @@ def creator_info(account_id: str,user: User=Depends(current_user),db: Session=De
 
 
 class TikTokPublish(BaseModel):
+    delivery: str=Field(default='direct',pattern='^(direct|inbox)$')
     account_id: str
     version: int
     explicit_authorization: bool
@@ -156,11 +165,12 @@ def authorize_tiktok(clip_id: str,body: TikTokPublish,user: User=Depends(current
     if deadline_state(campaign.rules.get('submission_deadline'))=='expired':raise HTTPException(409,'Campaign deadline has expired.')
     if campaign.rules!=plan.rules_snapshot or 'tiktok' not in campaign.rules.get('allowed_platforms',[]) or 'tiktok' in campaign.rules.get('prohibited_platforms',[]):
         raise HTTPException(409,'Current campaign rules do not permit this TikTok draft.')
-    if body.privacy_level!='SELF_ONLY' and os.getenv('TIKTOK_DIRECT_POST_AUDITED','false').lower()!='true':
+    if body.delivery=='inbox' and 'video.upload' not in account.scopes:raise HTTPException(403,'Reconnect with the approved video.upload scope for the TikTok inbox workflow.')
+    if body.delivery=='direct' and body.privacy_level!='SELF_ONLY' and os.getenv('TIKTOK_DIRECT_POST_AUDITED','false').lower()!='true':
         raise HTTPException(403,'Unaudited TikTok clients may post privately only. Export for manual posting or complete the official audit.')
-    info=creator_info(account.id,user,db)
-    if body.privacy_level not in info.get('privacy_level_options',[]):raise HTTPException(422,'Select a privacy setting offered by this creator account.')
-    if clip.media_info['duration']>info.get('max_video_post_duration_sec',0):raise HTTPException(422,'Draft exceeds the creator account duration limit.')
+    info=creator_info(account.id,user,db) if body.delivery=='direct' else {}
+    if body.delivery=='direct' and body.privacy_level not in info.get('privacy_level_options',[]):raise HTTPException(422,'Select a privacy setting offered by this creator account.')
+    if clip.media_info['duration']>(info.get('max_video_post_duration_sec',0) if body.delivery=='direct' else 600):raise HTTPException(422,'Draft exceeds the creator account duration limit.')
     for key in ('comment','duet','stitch'):
         if info.get(key+'_disabled') and not getattr(body,'disable_'+key):raise HTTPException(422,'Creator settings prohibit enabling '+key+'.')
     existing=db.scalar(select(PublishingJob).where(PublishingJob.clip_id==clip.id,PublishingJob.platform=='tiktok',PublishingJob.version==clip.current_version))
@@ -168,7 +178,7 @@ def authorize_tiktok(clip_id: str,body: TikTokPublish,user: User=Depends(current
         from .main import obj
         return obj(existing,'upload_state')
     job=PublishingJob(user_id=user.id,clip_id=clip.id,account_id=account.id,platform='tiktok',version=clip.current_version,
-        authorized=True,privacy={'SELF_ONLY':'private','PUBLIC_TO_EVERYONE':'public','MUTUAL_FOLLOW_FRIENDS':'friends','FOLLOWER_OF_CREATOR':'followers'}[body.privacy_level],upload_state={'post_info':body.model_dump(exclude={'account_id','version','explicit_authorization','consent_to_music_usage'})})
+        authorized=True,privacy={'SELF_ONLY':'private','PUBLIC_TO_EVERYONE':'public','MUTUAL_FOLLOW_FRIENDS':'friends','FOLLOWER_OF_CREATOR':'followers'}[body.privacy_level],upload_state={'delivery':body.delivery,'post_info':body.model_dump(exclude={'account_id','version','explicit_authorization','consent_to_music_usage','delivery'})})
     db.add(job);db.commit()
     from .main import obj
     return obj(job,'upload_state')
@@ -185,15 +195,16 @@ def publish_tiktok(db,job):
     if deadline_state(campaign.rules.get('submission_deadline'))=='expired':raise ValueError('Campaign deadline expired before publication.')
     if campaign.rules!=plan.rules_snapshot or 'tiktok' not in campaign.rules.get('allowed_platforms',[]) or 'tiktok' in campaign.rules.get('prohibited_platforms',[]):
         raise ValueError('Campaign changed or prohibits TikTok.')
-    if 'video.publish' not in account.scopes:raise ValueError('TikTok Direct Post scope is unavailable; use manual export.')
+    inbox=job.upload_state.get('delivery')=='inbox'
+    if ('video.upload' if inbox else 'video.publish') not in account.scopes:raise ValueError('The required approved TikTok posting scope is unavailable; use manual export.')
     token=tiktok_token(db,account);state=dict(job.upload_state or {})
     privacy=state.get('post_info',{}).get('privacy_level')
     if not state.get('publish_id'):
         if state.get('init_attempted'):raise ValueError('An earlier TikTok initialization has an unknown result. Review the account before starting another upload.')
-        info=tiktok_request('post/publish/creator_info/query/',token,json={})
-        if privacy not in info.get('privacy_level_options',[]):raise ValueError('TikTok creator privacy options changed; review consent again.')
-        if clip.media_info['duration']>info.get('max_video_post_duration_sec',0):raise ValueError('Draft exceeds the current TikTok creator duration limit.')
-        if privacy!='SELF_ONLY' and os.getenv('TIKTOK_DIRECT_POST_AUDITED','false').lower()!='true':raise ValueError('Public Direct Post requires official TikTok audit.')
+        info=tiktok_request('post/publish/creator_info/query/',token,json={}) if not inbox else {}
+        if not inbox and privacy not in info.get('privacy_level_options',[]):raise ValueError('TikTok creator privacy options changed; review consent again.')
+        if clip.media_info['duration']>(600 if inbox else info.get('max_video_post_duration_sec',0)):raise ValueError('Draft exceeds the current TikTok creator duration limit.')
+        if not inbox and privacy!='SELF_ONLY' and os.getenv('TIKTOK_DIRECT_POST_AUDITED','false').lower()!='true':raise ValueError('Public Direct Post requires official TikTok audit.')
         meta=selected_metadata(clip.metadata_json,'tiktok')
         from .services.publication_text import publication_text
         caption=publication_text(meta,'tiktok')
@@ -202,8 +213,9 @@ def publish_tiktok(db,job):
             size=path.stat().st_size;chunk=min(size,10*1024*1024);count=max(1,size//chunk)
             state.update(init_attempted=True,total=size,chunk_size=chunk,chunk_count=count,offset=0)
             job.upload_state=state;db.commit()
-            init=tiktok_request('post/publish/video/init/',token,json={'post_info':{**state['post_info'],'title':caption},
-                'source_info':{'source':'FILE_UPLOAD','video_size':size,'chunk_size':chunk,'total_chunk_count':count}})
+            payload={'source_info':{'source':'FILE_UPLOAD','video_size':size,'chunk_size':chunk,'total_chunk_count':count}}
+            if not inbox:payload['post_info']={**state['post_info'],'title':caption}
+            init=tiktok_request('post/publish/inbox/video/init/' if inbox else 'post/publish/video/init/',token,json=payload)
         upload=urlparse(init.get('upload_url',''))
         if upload.scheme!='https' or not (upload.hostname or '').endswith('.tiktokapis.com') or upload.username or upload.password:
             raise ValueError('TikTok returned an invalid upload URL.')
@@ -223,6 +235,8 @@ def publish_tiktok(db,job):
                 offset+=len(chunk);state.update(offset=offset,chunk_inflight=False);job.upload_state=dict(state);db.commit()
     status=tiktok_request('post/publish/status/fetch/',token,json={'publish_id':state['publish_id']})
     if status.get('status')=='FAILED':raise ValueError('TikTok rejected processing. Review content and account limits before retrying.')
+    if inbox and status.get('status') in {'SEND_TO_USER_INBOX','PUBLISH_COMPLETE'}:
+        job.status='uploaded_draft';job.error='Sent to your TikTok inbox. Finish editing and publish in TikTok. No public post or KPI was inferred.';db.commit();return
     if status.get('status')!='PUBLISH_COMPLETE':
         job.status='awaiting_publication';job.error='TikTok is processing this upload. No public publication is recorded.';db.commit();return
     if privacy=='SELF_ONLY':

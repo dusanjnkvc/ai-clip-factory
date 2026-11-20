@@ -89,6 +89,8 @@ def access_token(db, account):
         raise ValueError('Reconnect YouTube to grant offline access.')
     response = httpx.post('https://oauth2.googleapis.com/token', data={'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'], 'grant_type':'refresh_token','refresh_token':refresh}, timeout=60)
     if response.status_code != 200:
+        if response.status_code in {400,401}:
+            account.status='reauthorization_required';db.commit()
         raise ValueError('YouTube token refresh failed. Reconnect the account.')
     updated = response.json()
     updated['refresh_token'] = refresh

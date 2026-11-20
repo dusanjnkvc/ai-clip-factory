@@ -61,7 +61,7 @@ class HighlightRanking(Contract):
     analysis_identity: str
     source_duration: float = Field(gt=0)
     target_duration: float = Field(gt=0)
-    candidates: list[RankedHighlight] = Field(max_length=3)
+    candidates: list[RankedHighlight] = Field(max_length=10)
     rubric: dict[str, float]
     warnings: list[str]
     unavailable_reasons: list[str]
@@ -189,8 +189,8 @@ def _rank_window(analysis: SourceAnalysis, rules: dict, start: float, length: fl
     return RankedHighlight(id=identifier, start=start, end=end, segments=[SourceWindow(start=start, end=end)], evidence_ids=evidence, observations=observations, transcript_excerpt=exact_text, model_uncertainty=uncertainty, score=_score(sum(scores[name] * weights[name] for name in FACTORS)), scores=scores, factors=factors)
 
 
-def rank_highlights(analysis: SourceAnalysis | dict, rules: dict | None = None, target_duration: float = 20, *, weights: dict[str, float] | None = None, count: int = 3, audience: str = "", platform: str = "youtube") -> dict:
-    """Rank up to three different source-grounded, chronological windows."""
+def rank_highlights(analysis: SourceAnalysis | dict, rules: dict | None = None, target_duration: float = 20, *, weights: dict[str, float] | None = None, count: int = 3, audience: str = "", platform: str = "youtube", exclude_static_cards: bool = False) -> dict:
+    """Rank distinct source windows; never pad with duplicate evidence."""
     measured = _validated_analysis(analysis)
     raw_rules = {} if rules is None else rules
     try:
@@ -199,8 +199,8 @@ def rank_highlights(analysis: SourceAnalysis | dict, rules: dict | None = None, 
         raise PipelineError("Highlight ranking requires valid campaign rules") from exc
     if isinstance(target_duration, bool) or not isinstance(target_duration, (int, float)) or not math.isfinite(target_duration) or target_duration <= 0:
         raise PipelineError("Target highlight duration must be a finite positive number")
-    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 3:
-        raise PipelineError("Choose one to three ranked highlight windows")
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 10:
+        raise PipelineError("Choose one to ten ranked highlight windows")
     if platform not in {"youtube", "tiktok", "instagram"}:
         raise PipelineError("Choose a supported short-video platform")
     if not isinstance(audience, str) or len(audience) > 1000:
@@ -232,6 +232,12 @@ def rank_highlights(analysis: SourceAnalysis | dict, rules: dict | None = None, 
     selected: list[RankedHighlight] = []
     if not unavailable:
         candidates = [_rank_window(measured, checked_rules, start, length, rubric, audience) for start in _candidate_starts(measured, length)]
+        if exclude_static_cards:
+            # A clearly identified rating/title/menu/blank sample is not gameplay
+            # evidence, even when a hard visual transition gives it a high score.
+            from .content_evidence import scene_observation
+            candidates=[c for c in candidates if c is not None and any(scene_observation(o) for o in c.observations)]
+            warnings.append('Known title, rating, menu and blank-only sampled windows are excluded. Sparse model samples still cannot establish continuous gameplay or payoff.')
         candidates = sorted((candidate for candidate in candidates if candidate is not None), key=lambda candidate: (-candidate.score, candidate.start, candidate.end))
         for candidate in candidates:
             if all(not set(candidate.evidence_ids).intersection(previous.evidence_ids) and

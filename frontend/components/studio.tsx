@@ -130,7 +130,7 @@ export default function Studio({notify}:{notify:(text:string)=>void}) {
   </section>;
 }
 
-function DraftEditor({draft,onClose,onSaved}:{draft:Row;onClose:()=>void;onSaved:()=>Promise<void>}) {
+export function DraftEditor({draft,onClose,onSaved}:{draft:Row;onClose:()=>void;onSaved:()=>Promise<void>}) {
   const [plan,setPlan]=useState<Row>(structuredClone(draft.plan)),[metadata,setMetadata]=useState<Row>(structuredClone(draft.metadata));
   const [note,setNote]=useState(''),[evidence,setEvidence]=useState<Row>({}),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [history,setHistory]=useState<Row[]>([]),[future,setFuture]=useState<Row[]>([]);

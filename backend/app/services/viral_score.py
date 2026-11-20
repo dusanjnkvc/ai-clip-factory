@@ -7,7 +7,7 @@ from pydantic import Field
 from .local_analysis import Contract, sample_frames, detect_scenes
 from .media import probe_media, sha256_file, PipelineError,run_media,ffmpeg_binary,safe_input_options
 
-WEIGHTS={'hook':.20,'entertainment':.20,'editing':.15,'title':.15,'description':.10,'hashtags':.05,'retention_estimate':.10,'research':.05}
+WEIGHTS={'hook':.20,'entertainment':.20,'editing':.15,'headline':.15,'visual_audio':.10,'metadata':.10,'audience':.10}
 
 
 class RenderReview(Contract):
@@ -33,7 +33,7 @@ class FrameReview(Contract):
 def weights():
     chosen=json.loads(os.getenv('VIRAL_SCORE_WEIGHTS','null')) or WEIGHTS
     if set(chosen)!=set(WEIGHTS) or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in chosen.values()) or sum(chosen.values())<=0:
-        raise PipelineError('VIRAL_SCORE_WEIGHTS must cover eight finite nonnegative factors.')
+        raise PipelineError('VIRAL_SCORE_WEIGHTS must cover the seven current editorial factors with finite nonnegative weights.')
     total=sum(chosen.values())
     return {k:v/total for k,v in chosen.items()}
 
@@ -55,8 +55,13 @@ def score_metadata(visual, metadata, research=None, configured_weights=None):
             'hashtags':max(10,100-max(0,len(chosen['hashtags'])-6)*8),
             'retention_estimate':(review['ending_visual']+review['opening_visual']+pacing)/3,
             'research':60 if research and research.get('status')=='available' else 0}
+        components.update(headline=max(0,100-max(0,len(visual.get('rendered_hook',''))-45)*1.5),
+            visual_audio=(review['opening_visual']+review['ending_visual']+review['framing'])/3,
+            metadata=(components['title']+components['description']+components['hashtags'])/3,
+            audience=(review['visual_interest']+review['framing'])/2)
         result[platform]={'score':round(sum(components[k]*rubric[k] for k in rubric),2),
-            'components':{k:round(v,2) for k,v in components.items()},'weights':rubric,
+            'components':{k:round(components[k],2) for k in rubric},'weights':rubric,
+            'rubric':'hook20/gameplay20/editing15/headline15/visual_audio10/metadata10/audience10',
             'confidence':'low','evidence_mode':'offline_plus_current_research' if research and research.get('status')=='available' else 'offline_only',
             'limitation':'Editorial heuristics, not probabilities or predicted views. Sparse samples cannot verify continuous action, retention, audio sync or semantic truth. Title/description factors measure length/readability, not proven engagement.'}
     return result

@@ -43,7 +43,7 @@ class ProjectInput(BaseModel):
     source_id: str
     campaign_id: str | None=None
     reference_ids: list[str]=Field(default_factory=list,max_length=3)
-    clip_count: int=Field(default=3,ge=1,le=3)
+    clip_count: int=Field(default=3,ge=1,le=10)
     duration: float=Field(default=10,ge=1,le=180,allow_inf_nan=False)
     minimum_duration: float=Field(default=6,ge=1,le=180)
     maximum_duration: float=Field(default=20,ge=1,le=180)
@@ -51,7 +51,8 @@ class ProjectInput(BaseModel):
     context: str=Field(default='',max_length=4000)
     original_creator_confirmed: bool=False
     processing_mode: str=Field(default='balanced',pattern='^(fast|balanced|quality)$')
-    editing_profile: str=Field(default='automatic',pattern='^(automatic|gaming|cinematic|clean|reference)$')
+    editing_profile: str=Field(default='opus',pattern='^(opus|automatic|gaming|cinematic|clean|reference)$')
+    destination: str=Field(default='both',pattern='^(both|youtube|tiktok)$')
     framing: str=Field(default='fit',pattern='^(fit|crop)$')
     output_preset: str=Field(default='portrait_1080',pattern='^(portrait_1080|portrait_720|square_1080|landscape_1080)$')
 
@@ -114,6 +115,7 @@ def start(project_id: str,request: Request,user: User=Depends(current_user),db: 
             return row_json(job)
     from .main import AutoCreate,auto_create
     options={**project.options,'source_id':project.source_id,'campaign_id':project.campaign_id,'studio':True}
+    options['platform']='tiktok' if options.get('destination')=='tiktok' else 'youtube'
     if project.reference_ids:
         options['reference_profile']=owner(db,ReferenceStyle,project.reference_ids[0],user).profile
     result=auto_create(AutoCreate.model_validate(options),request,user,db)
@@ -142,6 +144,27 @@ def detail(project_id: str,user: User=Depends(current_user),db: Session=Depends(
     job=db.get(ProcessingJob,project.job_id) if project.job_id else None
     active=list(db.scalars(select(ProcessingJob).where(ProcessingJob.user_id==user.id,ProcessingJob.source_id==project.source_id,ProcessingJob.status.in_(['queued','processing']))))
     return {**row_json(project),'job':row_json(job) if job else None,'drafts':clips,'active_jobs':[row_json(j) for j in active]}
+
+
+@router.get('/clips')
+def generated_clips(user: User=Depends(current_user),db: Session=Depends(get_db)):
+    """Include legacy outputs alongside new projects without rewriting saved rows."""
+    from .main import clip_json
+    from .models import PublishedPost,PublishingJob
+    result=[]
+    for clip in db.scalars(select(RenderedClip).where(RenderedClip.user_id==user.id).order_by(RenderedClip.created_at.desc())):
+        campaign=db.get(Campaign,clip.campaign_id);job=db.get(ProcessingJob,clip.job_id)
+        evaluation=db.scalar(select(DraftEvaluation).where(DraftEvaluation.clip_id==clip.id,DraftEvaluation.version==clip.current_version).order_by(DraftEvaluation.created_at.desc()))
+        decision=db.scalar(select(DraftDecision).where(DraftDecision.clip_id==clip.id,DraftDecision.version==clip.current_version).order_by(DraftDecision.created_at.desc()))
+        options=(job.payload or {}).get('options',{}) if job else {}
+        result.append({**clip_json(clip),'plan':db.get(EditingPlan,clip.editing_plan_id).plan,
+            'campaign_name':campaign.name if campaign and campaign.name!='General local creation' else 'No Campaign',
+            'destination':options.get('destination','both'),'evaluation':evaluation.evaluation if evaluation else None,
+            'editing_style':{'opus':'Opus-Style Gaming','gaming':'Dynamic Gaming','cinematic':'Cinematic Gaming','automatic':'AI Auto'}.get(options.get('editing_profile'),''),
+            'decision':decision.decision if decision else 'needs_review',
+            'publications':[row_json(p) for p in db.scalars(select(PublishedPost).where(PublishedPost.clip_id==clip.id,PublishedPost.user_id==user.id))],
+            'publishing_jobs':[{'id':p.id,'platform':p.platform,'status':p.status,'error':p.error,'version':p.version} for p in db.scalars(select(PublishingJob).where(PublishingJob.clip_id==clip.id,PublishingJob.user_id==user.id))]})
+    return result
 
 
 @router.get('/projects/{project_id}/export')
@@ -239,6 +262,22 @@ class ImportInput(BaseModel):
     rights_confirmed: bool
 
 
+class URLImportInput(BaseModel):
+    url: str=Field(max_length=2000)
+    rights_confirmed: bool
+
+
+@router.post('/sources/import-url')
+def import_video_url(body: URLImportInput,user: User=Depends(current_user),db: Session=Depends(get_db)):
+    if not body.rights_confirmed:raise HTTPException(422,'Confirm permission to download and edit the video.')
+    from .services.url_import import import_youtube
+    from .main import upload_source,settings
+    from fastapi import UploadFile
+    with tempfile.TemporaryDirectory(prefix='acf-authorized-import-') as directory:
+        path,title=import_youtube(body.url,directory,settings.max_upload_mb*1024*1024)
+        with path.open('rb') as stream:return upload_source(UploadFile(filename=title+path.suffix,file=stream),True,'User confirms permission to download and edit this YouTube video: '+body.url,user,db)
+
+
 @router.post('/input-directory/import')
 def import_local(body: ImportInput,user: User=Depends(current_user),db: Session=Depends(get_db)):
     from .main import upload_source
@@ -285,6 +324,43 @@ def improve(clip_id: str,user: User=Depends(current_user),db: Session=Depends(ge
 class ComponentRequest(BaseModel):
     component: str=Field(pattern='^(titles|metadata|hook|captions|effects)$')
     version: int
+    platform: str=Field(default='youtube',pattern='^(youtube|tiktok)$')
+    field: str | None=Field(default=None,pattern='^(title|description|caption|hashtags)$')
+
+
+class DraftEdit(BaseModel):
+    version: int
+    plan: dict | None=None
+    metadata: dict | None=None
+    restore_version: int | None=Field(default=None,ge=1)
+
+
+@router.post('/drafts/{clip_id}/edit')
+def edit_draft(clip_id: str,body: DraftEdit,user: User=Depends(current_user),db: Session=Depends(get_db)):
+    clip=owner(db,RenderedClip,clip_id,user)
+    if clip.current_version!=body.version:raise HTTPException(409,'The clip changed. Reopen the current version before editing.')
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.user_id==user.id,ProcessingJob.source_id==clip.source_id,ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'Wait for the current edit to finish before saving another change.')
+    plan=body.plan;metadata=body.metadata
+    if body.restore_version:
+        from .models import ClipVersion
+        old=db.scalar(select(ClipVersion).where(ClipVersion.clip_id==clip.id,ClipVersion.version==body.restore_version))
+        if not old:raise HTTPException(404,'Saved version not found.')
+        plan=old.plan;metadata=old.metadata_json
+    from .main import regenerate_clip,RegenerateRequest,update_metadata,ClipMetadataUpdate
+    from .services.schemas import Metadata
+    if metadata is not None:
+        from pydantic import ValidationError
+        try:metadata=Metadata.model_validate(metadata).model_dump()
+        except ValidationError as exc:raise HTTPException(422,'Invalid platform metadata.') from exc
+    current=db.get(EditingPlan,clip.editing_plan_id).plan
+    if plan is not None and (plan!=current or body.restore_version):
+        result=regenerate_clip(clip.id,RegenerateRequest(plan=plan),user,db)
+        if metadata is not None:
+            job=db.get(ProcessingJob,result['id']);job.payload={**job.payload,'metadata':metadata};db.commit()
+        return {'action':'render_queued','job':result}
+    if metadata is not None:return {'action':'metadata_saved','clip':update_metadata(clip.id,ClipMetadataUpdate(metadata=metadata),user,db)}
+    return {'action':'unchanged'}
 
 
 @router.post('/drafts/{clip_id}/regenerate-component')
@@ -326,10 +402,17 @@ def regenerate_component(clip_id: str,body: ComponentRequest,user: User=Depends(
             return update_metadata(clip.id,ClipMetadataUpdate(metadata=metadata),user,db)
         if body.component=='metadata':
             research=original_job.payload.get('auto_result',{}).get('research',{'status':'unavailable'})
-            metadata=generate_studio_package(provider,plan,context,rules,research)['metadata']
-            for block in metadata.values():
-                block['generation_status']='generated'
-                for variant in block['variants']:variant['opening_hook']=plan['hook']
+            generated=generate_studio_package(provider,plan,context,rules,research)['metadata']
+            if body.field:
+                target=metadata[body.platform];source=generated[body.platform]
+                for index,variant in enumerate(target['variants']):variant[body.field]=source['variants'][index][body.field]
+                target['generation_status']='generated'
+                if body.field=='title' and 'title_candidates' in source:target['title_candidates']=source['title_candidates']
+            else:
+                metadata=generated
+                for block in metadata.values():
+                    block['generation_status']='generated'
+                    for variant in block['variants']:variant['opening_hook']=plan['hook']
             return update_metadata(clip.id,ClipMetadataUpdate(metadata=metadata),user,db)
         if body.component=='hook':
             hooks=generate_hooks(provider,plan,context);plan['hook']=hooks['selected']

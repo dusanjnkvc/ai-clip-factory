@@ -42,6 +42,8 @@ def test_youtube_sync_separates_lifetime_and_authorized_daily_reports(environmen
         row=db.get(ConnectedAccount,account);row.platform='youtube';row.external_id='channel-id';row.scopes=['https://www.googleapis.com/auth/yt-analytics.readonly'];db.commit()
     monkeypatch.setattr(performance,'access_token',lambda *a:'controlled-test-token')
     def handler(request):
+        if request.url.path.endswith('/channels'):
+            return httpx.Response(200,json={'items':[{'id':'channel-id','statistics':{'subscriberCount':'1200','viewCount':'5000','hiddenSubscriberCount':False}}]})
         if request.url.host=='www.googleapis.com':
             return httpx.Response(200,json={'items':[{'id':'abcdef12345','snippet':{'channelId':'channel-id'},'statistics':{'viewCount':'500','likeCount':'10'}}]})
         return httpx.Response(200,json={'columnHeaders':[{'name':'day'},{'name':'views'},{'name':'estimatedMinutesWatched'}],
@@ -54,3 +56,41 @@ def test_youtube_sync_separates_lifetime_and_authorized_daily_reports(environmen
     assert report['lifetime_views']==500 and report['period_views']==0
     assert report['posts'][0]['lifetime']['shares'] is None
     assert report['posts'][0]['period'][0]['watch_minutes']==0
+    assert report['account_audience'][0]['total']==1200
+    assert report['account_audience'][0]['growth'] is None
+
+
+def test_account_growth_and_post_windows_require_actual_coverage(environment,monkeypatch):
+    from app.models import AccountObservation,RenderedClip
+    from sqlalchemy import select
+    client,factory,config=environment;user=register(client);setup_social(monkeypatch)
+    clip,account=seed_clip(factory,user['id'],config);post=seed_post(factory,user['id'],clip)
+    today=date.today();start=today-timedelta(days=7)
+    with factory() as db:
+        db.add(AccountObservation(account_id=account,user_id=user['id'],platform='tiktok',metrics={'audience':100},provenance='controlled',created_at=datetime.combine(start,datetime.min.time())))
+        db.add(AccountObservation(account_id=account,user_id=user['id'],platform='tiktok',metrics={'audience':108},provenance='controlled',created_at=datetime.utcnow()))
+        published=db.get(PublishedPost,post).published_at.date()
+        for day in range(7):
+            db.add(PlatformObservation(post_id=post,metrics={'basis':'daily','date':str(published+timedelta(days=day)),'views':day,'likes':0,'watch_minutes':0},provenance='controlled'))
+        db.commit()
+    report=client.get('/api/performance/dashboard',params={'start':str(today-timedelta(days=29)),'end':str(today),'clip_id':clip}).json()
+    row=report['posts'][0]
+    assert row['publication_windows']['7_calendar_days']['views']==21
+    assert row['publication_windows']['30_calendar_days']['views'] is None
+    assert row['first_24h_views'] is None and row['retention'] is None and row['reported_watch_minutes']==0
+    report=client.get('/api/performance/dashboard',params={'start':str(start),'end':str(today)}).json()
+    assert report['account_audience'][0]['growth']==8
+    assert not client.get('/api/performance/dashboard',params={'clip_id':'unrelated-owned-or-missing'}).json()['posts']
+
+
+def test_idle_sync_failure_is_persisted_and_backed_off(environment,monkeypatch):
+    client,factory,config=environment;user=register(client);setup_social(monkeypatch)
+    _,account=seed_clip(factory,user['id'],config);calls=[]
+    def unavailable(*args):calls.append(True);raise RuntimeError('Controlled provider outage')
+    monkeypatch.setattr(performance,'sync_account',unavailable)
+    with factory() as db:
+        assert performance.sync_idle_account(db)
+        assert not performance.sync_idle_account(db)
+        saved=db.get(User,user['id']).preferences['analytics_sync_'+account]
+        assert saved['status']=='failed' and 'Controlled provider outage' not in str(saved)
+    assert len(calls)==1

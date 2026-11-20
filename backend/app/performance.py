@@ -14,12 +14,34 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .db import get_db
 from .security import current_user,rate_limit
-from .models import User,PublishedPost,PlatformObservation,AnalyticsSnapshot,RenderedClip,EditingPlan,now
+from .models import User,PublishedPost,PlatformObservation,AnalyticsSnapshot,RenderedClip,EditingPlan,AccountObservation,ConnectedAccount,now
 from .social import account_owned,tiktok_token,tiktok_request
 from .publishing import access_token
 from .runtime import social_enabled
+import time
 
 router=APIRouter(prefix='/api/performance',tags=['Actual performance'])
+
+
+def sync_idle_account(db):
+    """One optional official sync per idle worker pass; persisted 15-minute gate."""
+    if not social_enabled():return False
+    from .models import ConnectedAccount
+    for account in db.scalars(select(ConnectedAccount).where(ConnectedAccount.status=='connected')):
+        if account.platform not in {'youtube','tiktok'}:continue
+        user=db.get(User,account.user_id)
+        key='analytics_sync_'+account.id
+        prior=user.preferences.get(key,{})
+        if time.time()-prior.get('attempted_at',0)<900:continue
+        user.preferences={**user.preferences,key:{**prior,'attempted_at':time.time(),'status':'syncing'}};db.commit()
+        try:
+            end=date.today();result=sync_account(account.id,SyncInput(start=end-timedelta(days=29),end=end),user,db)
+            status={'attempted_at':time.time(),'status':'synced','synced_at':datetime.now(timezone.utc).isoformat(),'unavailable':result.get('unavailable',[])}
+        except Exception:
+            db.rollback();user=db.get(User,account.user_id)
+            status={'attempted_at':time.time(),'status':'failed','message':'Automatic analytics sync failed. Refresh manually to inspect account permissions or provider availability.'}
+        user.preferences={**user.preferences,key:status};db.commit();return True
+    return False
 
 
 def metric(value):
@@ -108,15 +130,41 @@ class SyncInput(BaseModel):
         return self
 
 
+def sync_audience(db,account):
+    """Account totals are never attributed to individual clips."""
+    if account.platform=='youtube':
+        token=access_token(db,account)
+        with httpx.Client(timeout=30,trust_env=False,follow_redirects=False) as client:
+            response=client.get('https://www.googleapis.com/youtube/v3/channels',params={'part':'statistics','mine':'true'},headers={'Authorization':'Bearer '+token})
+            response.raise_for_status()
+        item=next((i for i in response.json().get('items',[]) if i.get('id')==account.external_id),None)
+        if not item:return 'YouTube channel-level statistics were not returned for this connected identity.'
+        stats=item.get('statistics',{});values={'audience':None if stats.get('hiddenSubscriberCount') else metric(stats.get('subscriberCount')),'audience_label':'subscribers','channel_views':metric(stats.get('viewCount')),'video_count':metric(stats.get('videoCount')),'precision':'YouTube subscriber totals may be rounded by the platform.'}
+    elif account.platform=='tiktok':
+        if 'user.info.stats' not in account.scopes:return 'TikTok follower totals need the approved user.info.stats scope and reauthorization.'
+        token=tiktok_token(db,account)
+        with httpx.Client(timeout=30,trust_env=False,follow_redirects=False) as client:
+            response=client.get('https://open.tiktokapis.com/v2/user/info/',params={'fields':'open_id,follower_count,following_count,likes_count,video_count'},headers={'Authorization':'Bearer '+token});response.raise_for_status()
+        item=response.json().get('data',{}).get('user',{})
+        if item.get('open_id')!=account.external_id:return 'TikTok account statistics could not be verified for this identity.'
+        values={'audience':metric(item.get('follower_count')),'audience_label':'followers','account_likes':metric(item.get('likes_count')),'video_count':metric(item.get('video_count'))}
+    else:return 'Account statistics unavailable.'
+    db.add(AccountObservation(account_id=account.id,user_id=account.user_id,platform=account.platform,metrics=values,provenance='official_'+account.platform+'_account_api'))
+    return None
+
+
 @router.post('/accounts/{account_id}/sync')
 def sync_account(account_id: str,body: SyncInput,user: User=Depends(current_user),db: Session=Depends(get_db)):
     if not social_enabled():raise HTTPException(503,'Enable optional social integrations before syncing.')
     rate_limit('analytics-sync:'+user.id,limit=20,seconds=3600)
     account=account_owned(db,account_id,user)
+    try:audience_warning=sync_audience(db,account)
+    except (httpx.HTTPError,HTTPException,ValueError):audience_warning='Account audience statistics unavailable; video-level synchronization continues separately.'
     posts=list(db.scalars(select(PublishedPost).where(PublishedPost.user_id==user.id,PublishedPost.platform==account.platform).order_by(PublishedPost.published_at.desc()).limit(20)))
     mapped={video_id(p):p for p in posts if video_id(p)}
-    if not mapped:return {'synced':0,'unavailable':['No supported published video IDs are recorded.']}
-    warnings=[];count=0
+    if not mapped:
+        db.commit();return {'synced':0,'unavailable':[s for s in ['No supported published video IDs are recorded.',audience_warning] if s]}
+    warnings=[audience_warning] if audience_warning else [];count=0
     if account.platform=='youtube':
         token=access_token(db,account)
         with httpx.Client(timeout=60,follow_redirects=False,trust_env=False) as client:
@@ -158,11 +206,15 @@ def sync_account(account_id: str,body: SyncInput,user: User=Depends(current_user
     db.commit();return {'synced':count,'unavailable':list(dict.fromkeys(warnings)),'limit':'At most20 recent recorded posts per synchronization.'}
 
 
-def dashboard_data(db,user,start,end,platform=None):
+def dashboard_data(db,user,start,end,platform=None,campaign_id=None,clip_id=None,style=None):
     query=select(PublishedPost).where(PublishedPost.user_id==user.id)
     if platform:query=query.where(PublishedPost.platform==platform)
+    if campaign_id:query=query.where(PublishedPost.campaign_id==campaign_id)
+    if clip_id:query=query.where(PublishedPost.clip_id==clip_id)
     posts=list(db.scalars(query));rows=[];daily=defaultdict(float);period=[]
     for post in posts:
+        clip=db.get(RenderedClip,post.clip_id);plan=db.get(EditingPlan,clip.editing_plan_id).plan if clip else {}
+        if style and plan.get('edit_dna',{}).get('visual_effects')!=style:continue
         observations=list(db.scalars(select(PlatformObservation).where(PlatformObservation.post_id==post.id).order_by(PlatformObservation.created_at.desc())))
         latest=next((o for o in observations if o.metrics.get('basis')=='lifetime'),None)
         values=latest.metrics if latest else None
@@ -183,25 +235,55 @@ def dashboard_data(db,user,start,end,platform=None):
         available=[key for key in ('likes','comments','shares') if values and values.get(key) is not None]
         rate=sum(values[k] for k in available)/values['views'] if available and values.get('views') else None
         age=max(1,(captured-post.published_at).total_seconds()/86400) if captured else None
+        # Complete daily records can establish calendar-day windows only. They
+        # cannot establish the first rolling 24 hours after publication.
+        windows={}
+        for days in (7,30):
+            first=post.published_at.date();last=first+timedelta(days=days-1)
+            samples={m['date']:m.get('views') for m in ranges if first<=date.fromisoformat(m['date'])<=last}
+            complete=len(samples)==days and all(v is not None for v in samples.values()) and last<date.today()
+            windows[str(days)+'_calendar_days']={'views':sum(samples.values()) if complete else None,'reported_days':len(samples),'required_days':days}
+        watch=[m for m in ranges if m.get('watch_minutes') is not None]
         rows.append({'post_id':post.id,'clip_id':post.clip_id,'title':clip.title if clip else 'Recorded post','platform':post.platform,
             'url':post.url,'published_at':post.published_at.isoformat()+'Z','last_sync':captured.isoformat()+'Z' if captured else None,
             'lifetime':values,'period':ranges,'engagement_rate':round(rate,6) if rate is not None else None,
             'engagement_components':available,'views_per_day_since_publication':round(values['views']/age,2) if values and values.get('views') is not None and age else None,
+            'reported_watch_minutes':sum(m['watch_minutes'] for m in watch) if watch else None,
+            'publication_windows':windows,'first_24h_views':None,'retention':None,'attributed_audience_gain':None,
+            'unsupported_metrics':'Rolling first24-hour views, retention and clip-attributed audience gains are unavailable from the current adapters. Calendar windows require every daily record.',
             'duration':clip.media_info.get('duration') if clip else None,'style':plan.get('edit_dna',{}).get('visual_effects'),
             'hook':plan.get('hook'),'campaign_id':post.campaign_id})
     lifetime=[r['lifetime']['views'] for r in rows if r['lifetime'] and r['lifetime'].get('views') is not None]
     period_views=[m['views'] for m in period if m.get('views') is not None]
-    return {'posts':rows,'lifetime_views':sum(lifetime) if lifetime else None,'period_views':sum(period_views) if period_views else None,
+    totals={key:sum(r['lifetime'][key] for r in rows if r['lifetime'] and r['lifetime'].get(key) is not None) if any(r['lifetime'] and r['lifetime'].get(key) is not None for r in rows) else None for key in ('views','likes','comments','shares')}
+    daily_metrics=[]
+    for day in sorted({m['date'] for m in period}):
+        values={key:sum(m[key] for m in period if m['date']==day and m.get(key) is not None) if any(m['date']==day and m.get(key) is not None for m in period) else None for key in ('views','likes','comments','shares')}
+        daily_metrics.append({'date':day,**values})
+    audience=[]
+    for account in db.scalars(select(ConnectedAccount).where(ConnectedAccount.user_id==user.id)):
+        if platform and account.platform!=platform:continue
+        observations=list(db.scalars(select(AccountObservation).where(AccountObservation.account_id==account.id).order_by(AccountObservation.created_at)))
+        latest=observations[-1] if observations else None
+        baseline=next((o for o in reversed(observations) if str(o.created_at.date())<=str(start)),None)
+        total=latest.metrics.get('audience') if latest else None
+        endpoint=next((o for o in reversed(observations) if o.created_at.date()<=end),None)
+        growth=endpoint.metrics['audience']-baseline.metrics['audience'] if endpoint and endpoint.metrics.get('audience') is not None and baseline and baseline.metrics.get('audience') is not None and baseline.id!=endpoint.id else None
+        audience.append({'account_id':account.id,'name':account.name,'platform':account.platform,'total':total,'captured_at':latest.created_at.isoformat()+'Z' if latest else None,'growth':growth,
+            'history':[{'date':o.created_at.isoformat()+'Z','total':o.metrics.get('audience')} for o in observations if start<=o.created_at.date()<=end]})
+    return {'posts':rows,'totals':totals,'published_clips':len(rows),'average_views_per_clip':sum(lifetime)/len(lifetime) if lifetime else None,
+        'daily_metrics':daily_metrics,'account_audience':audience,
+        'lifetime_views':sum(lifetime) if lifetime else None,'period_views':sum(period_views) if period_views else None,
         'daily_views':[{'date':d,'views':v} for d,v in sorted(daily.items())],
         'range':{'start':str(start),'end':str(end)},'missing':'Missing metrics remain unavailable. Lifetime totals are not date-range views. Partial engagement rates identify which metrics were available.',
         'best_performing':sorted([r for r in rows if r['views_per_day_since_publication'] is not None],key=lambda r:r['views_per_day_since_publication'],reverse=True)[:5]}
 
 
 @router.get('/dashboard')
-def dashboard(start: date | None=None,end: date | None=None,platform: str | None=None,user: User=Depends(current_user),db: Session=Depends(get_db)):
+def dashboard(start: date | None=None,end: date | None=None,platform: str | None=None,campaign_id: str | None=None,clip_id: str | None=None,style: str | None=None,user: User=Depends(current_user),db: Session=Depends(get_db)):
     end=end or date.today();start=start or end-timedelta(days=29)
-    if start>end or (end-start).days>3650 or platform not in {None,'youtube','tiktok'}:raise HTTPException(422,'Choose a valid reporting range/platform.')
-    return dashboard_data(db,user,start,end,platform)
+    if start>end or start<date(2005,1,1) or platform not in {None,'youtube','tiktok'}:raise HTTPException(422,'Choose a valid reporting range/platform.')
+    return {**dashboard_data(db,user,start,end,platform,campaign_id,clip_id,style),'synchronization':[{'account_id':k.removeprefix('analytics_sync_'),**v} for k,v in user.preferences.items() if k.startswith('analytics_sync_') and isinstance(v,dict)]}
 
 
 def learning_data(db,user):

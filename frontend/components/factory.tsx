@@ -22,11 +22,7 @@ type Row = Record<string, any>;
 type Section = "AUTO CREATE" | "AI Creative Director" | "Dashboard" | "Content Rewards" | "Create Clips" | "Video Library" | "Generated Clips" | "AI Video Editor" | "Publishing Queue" | "Connected Accounts" | "Submissions" | "Earnings & Analytics" | "Settings";
 
 const navigation: { name: Section; icon: typeof LayoutDashboard; group?: string }[] = [
-
-  { name: "Dashboard", icon: LayoutDashboard }, { name: "AUTO CREATE", icon: Zap }, { name: "Content Rewards", icon: FileCheck2 }, { name: "Create Clips", icon: WandSparkles }, { name: "AI Creative Director", icon: Sparkles }, { name: "Video Library", icon: FolderOpen }, { name: "Generated Clips", icon: Film }, { name: "AI Video Editor", icon: Scissors },
-
-  { name: "Publishing Queue", icon: Send, group: "DISTRIBUTE" }, { name: "Connected Accounts", icon: Users }, { name: "Submissions", icon: CheckCheck }, { name: "Earnings & Analytics", icon: Coins }, { name: "Settings", icon: Settings2, group: "WORKSPACE" },
-
+  {name:'Create Clips',icon:WandSparkles},{name:'Generated Clips',icon:Film},{name:'Video Library',icon:FolderOpen},{name:'Earnings & Analytics',icon:Activity},{name:'Settings',icon:Settings2},
 ];
 
 const list = (value: any): Row[] => Array.isArray(value) ? value : value?.items || [];
@@ -47,7 +43,7 @@ function Platform({ name }: {name: string}) { return <span className={`platform 
 
 export default function Factory() {
 
-  const [section, setSection] = useState<Section>("Dashboard");
+  const [section, setSection] = useState<Section>("Create Clips");
 
   const [user, setUser] = useState<Row | null>(null);
 
@@ -145,7 +141,7 @@ export default function Factory() {
   const aiReady = config.ai === true || config.ai?.configured === true;
   const freeMode = config.free_mode !== false;
   const localNoAuth = freeMode && config.local_no_auth !== false;
-  const sectionLabel = freeMode && section === "AI Video Editor" ? "Video Editor" : section;
+  const sectionLabel = section === "Earnings & Analytics" ? "Analytics" : freeMode && section === "AI Video Editor" ? "Video Editor" : section;
 
   const [help, setHelp] = useState(false);
 
@@ -159,11 +155,11 @@ export default function Factory() {
 
     <aside id="workspace-navigation" className={`sidebar ${sideOpen ? "open" : ""}`}>
 
-      <button className="brand" onClick={() => go("Dashboard")}><span className="brand-mark"><Clapperboard size={21} /></span><span>clip<span className="brand-light">factory</span><small>{freeMode ? "FREE LOCAL WORKSPACE" : "AI CREATIVE WORKSPACE"}</small></span></button>
+      <button className="brand" onClick={() => go("Create Clips")}><span className="brand-mark"><Clapperboard size={21} /></span><span>clip<span className="brand-light">factory</span><small>{freeMode ? "FREE LOCAL WORKSPACE" : "AI CREATIVE WORKSPACE"}</small></span></button>
 
       <button className="workspace-switch" onClick={() => { if (!user && !localNoAuth) setAuth(true); else go("Settings"); }}><span className="workspace-avatar">{user?.name?.[0]?.toUpperCase() || "W"}</span><span>{user?.name ? `${user.name.split(" ")[0]}'s workspace` : "Your workspace"}<small>Personal workspace</small></span><ChevronDown size={14} /></button>
 
-      <nav aria-label="Main navigation">{navigation.filter(item=>item.name!=="AUTO CREATE"||(freeMode&&process.env.NEXT_PUBLIC_BROWSER_MODE!=="true")).map(({ name, icon: Icon, group }) => <div key={name}>{group && <div className="nav-group">{group}</div>}<button aria-current={section === name ? "page" : undefined} className={`nav-item ${section === name ? "active" : ""}`} onClick={() => go(name)}><Icon size={17} strokeWidth={1.7} /><span>{freeMode && name === "AI Video Editor" ? "Video Editor" : name}</span>{name === "Create Clips" && <span className="nav-new">{freeMode ? "LOCAL" : "AI"}</span>}{name === "Publishing Queue" && metrics.scheduled > 0 && <span className="nav-count">{metrics.scheduled}</span>}</button></div>)}</nav>
+      <nav aria-label="Main navigation">{navigation.filter(item=>item.name!=="AUTO CREATE"||(freeMode&&process.env.NEXT_PUBLIC_BROWSER_MODE!=="true")).map(({ name, icon: Icon, group }) => <div key={name}>{group && <div className="nav-group">{group}</div>}<button aria-current={section === name ? "page" : undefined} className={`nav-item ${section === name ? "active" : ""}`} onClick={() => go(name)}><Icon size={17} strokeWidth={1.7} /><span>{name === "Earnings & Analytics" ? "Analytics" : name}</span>{name === "Create Clips" && <span className="nav-new">{freeMode ? "LOCAL" : "AI"}</span>}{name === "Publishing Queue" && metrics.scheduled > 0 && <span className="nav-count">{metrics.scheduled}</span>}</button></div>)}</nav>
 
       <div className="sidebar-bottom"><div className="cloud-note"><span className="cloud-note-icon"><Cloud size={18} /></span><div>{freeMode ? "Runs on your computer" : "Built for the cloud"}<small>{freeMode ? "No paid API calls · Local rendering" : "No local GPU required"}</small></div><span className="tiny-dot" /></div><button className="help-link" onClick={() => setHelp(true)}><CircleHelp size={16} />Help & getting started<ArrowUpRight size={13} /></button><button className="profile" onClick={() => user || localNoAuth ? go("Settings") : setAuth(true)}><span className="avatar">{user?.name?.[0]?.toUpperCase() || (localNoAuth ? "L" : "Y")}</span><span>{localNoAuth ? "Local workspace" : user?.name || "Your creative workspace"}<small>{localNoAuth ? "Opens directly · saved on this device" : user?.email || "Sign in to get started"}</small></span><MoreHorizontal size={18} /></button></div>
 
@@ -175,7 +171,7 @@ export default function Factory() {
 
     <main>
 
-      <div className="page-heading"><div><div className="eyebrow">{section === "Dashboard" ? "YOUR CREATIVE COMMAND CENTER" : "AI CLIP FACTORY"}</div><h1>{section === "Dashboard" ? "Let’s make something worth watching." : sectionLabel}</h1><p>{({ "AUTO CREATE": "Local AI analysis, three edited drafts, and your approval.", "Dashboard": "From source video to standout clips. All in one flow.", "Content Rewards": "Campaign rules, creative work, and compliance in one place.", "AI Creative Director": "Measure your footage, compare concepts, and direct every edit locally.", "Create Clips": freeMode ? "Choose your moment. Render it locally. No API key required." : "Find the strongest moments. Give each one its own edit.", "Video Library": "Your authorized source material, ready for its next story.", "Generated Clips": "Distinctive edits. Platform-ready metadata. Full creative control.", "AI Video Editor": "Fine-tune the details and preserve every version.", "Publishing Queue": "Review, authorize, and publish through official integrations.", "Connected Accounts": "Connect your channels. Keep control of every publication.", "Submissions": "Publication is the beginning. Get your campaign submission ready.", "Earnings & Analytics": "Real performance, transparent costs, and verified payouts.", "Settings": freeMode ? "Local processing is enabled. Paid AI calls are blocked." : "Configure your workspace and cloud processing services." } as Record<Section, string>)[section]}</p></div><div className="heading-actions">{section === "Dashboard" && <button className="button secondary" onClick={() => newWork(true)}><Plus size={16} />New campaign</button>}{!["Settings", "Connected Accounts", "Earnings & Analytics", "Submissions", "AI Creative Director"].includes(section) && <button className="button primary" onClick={() => newWork(section === "Content Rewards")}><Zap size={16} fill="currentColor" />{section === "Content Rewards" ? "New campaign" : freeMode ? (process.env.NEXT_PUBLIC_BROWSER_MODE!=="true" ? "AUTO CREATE" : "Create clip") : "Generate FAST"}</button>}</div></div>
+      <div className="page-heading"><div><div className="eyebrow">{section === "Dashboard" ? "YOUR CREATIVE COMMAND CENTER" : "AI CLIP FACTORY"}</div><h1>{section === "Dashboard" ? "Let’s make something worth watching." : sectionLabel}</h1><p>{({ "AUTO CREATE": "Local AI analysis, three edited drafts, and your approval.", "Dashboard": "From source video to standout clips. All in one flow.", "Content Rewards": "Campaign rules, creative work, and compliance in one place.", "AI Creative Director": "Measure your footage, compare concepts, and direct every edit locally.", "Create Clips": freeMode ? "Choose your moment. Render it locally. No API key required." : "Find the strongest moments. Give each one its own edit.", "Video Library": "Your authorized source material, ready for its next story.", "Generated Clips": "Distinctive edits. Platform-ready metadata. Full creative control.", "AI Video Editor": "Fine-tune the details and preserve every version.", "Publishing Queue": "Review, authorize, and publish through official integrations.", "Connected Accounts": "Connect your channels. Keep control of every publication.", "Submissions": "Publication is the beginning. Get your campaign submission ready.", "Earnings & Analytics": "Real performance, transparent costs, and verified payouts.", "Settings": freeMode ? "Local processing is enabled. Paid AI calls are blocked." : "Configure your workspace and cloud processing services." } as Record<Section, string>)[section]}</p></div><div className="heading-actions">{section === "Dashboard" && <button className="button secondary" onClick={() => newWork(true)}><Plus size={16} />New campaign</button>}{!["Settings", "Connected Accounts", "Earnings & Analytics", "Submissions", "AI Creative Director", "Create Clips"].includes(section) && <button className="button primary" onClick={() => newWork(section === "Content Rewards")}><Zap size={16} fill="currentColor" />{section === "Content Rewards" ? "New campaign" : freeMode ? (process.env.NEXT_PUBLIC_BROWSER_MODE!=="true" ? "AUTO CREATE" : "Create clip") : "Generate FAST"}</button>}</div></div>
 
 
 
@@ -210,7 +206,8 @@ export default function Factory() {
 
 
 
-      {section === "Create Clips" && <div className="create-page"><section className="panel create-panel"><span className="section-icon"><Scissors size={26} /></span><div className="eyebrow">{freeMode ? "FREE LOCAL PROCESSING" : "MADE FROM YOUR MOMENTS"}</div><h2>Your source. Your moment.</h2><p>{freeMode ? "Pick the source range, choose a crop, and optionally bring an SRT or VTT subtitle file. FFmpeg creates a real vertical MP4 on this computer. No AI subscription or API key is needed." : "Bring a campaign brief and an authorized video. Create an editing plan, synchronized subtitles, and metadata for every platform."}</p><div className="mode-cards"><button onClick={() => newWork()}><FileCheck2 size={23} /><strong>Content Rewards</strong><p>Save the campaign rules, create a clip, and review compliance before publishing.</p><span>{freeMode ? "Create campaign clip" : "Generate FAST"}<ArrowRight size={15} /></span><Badge tone="purple">PRIMARY WORKFLOW</Badge></button><button onClick={() => { if (!user && !localNoAuth) setAuth(true); else { setCampaignOnly(false); setCreating(true); } }}><Scissors size={23} /><strong>{freeMode ? "Local clipping" : "General AI clipping"}</strong><p>{freeMode ? "Manually choose a range from an authorized podcast, interview, or gameplay video." : "Find standalone moments in your authorized source."}</p><span>Create clip<ArrowRight size={15} /></span></button></div><div className="info-line"><ShieldCheck size={15} />{freeMode ? "No paid AI calls. Rendering uses your computer’s CPU." : "Cloud AI + CPU rendering."}</div></section><section className="panel"><div className="panel-heading"><h2>Processing queue</h2><Badge>{jobs.length} jobs</Badge></div>{jobs.length ? jobs.map(j => <Job key={j.id} job={j} />) : <Empty icon={Gauge} title="Ready for your first render" text="Progress is saved, and every completed clip can be previewed and downloaded." />}</section></div>}
+      {section === "Create Clips" && <section className="panel studio form-body"><h2>Create a clip in your browser</h2><p>This GitHub Pages edition uses manual timing and supplied subtitles. Automatic local model processing runs in the native localhost edition.</p><LocalCreateFlow campaignOnly={false} campaigns={campaigns} sources={sources} onDone={message=>{notify(message);go('Generated Clips');void refresh();}}/><details><summary>Optional footage measurements and concepts</summary><CreativeDirector notify={notify} onRendered={()=>{go('Generated Clips');void refresh();}}/></details></section>}
+
 
 
 
@@ -225,6 +222,8 @@ export default function Factory() {
       {section === "Video Library" && <section className="panel"><div className="panel-heading"><h2>Authorized source videos<span className="count-badge">{rows.length}</span></h2><button className="text-button" onClick={() => newWork()}><UploadCloud size={15} />Upload video</button></div>{rows.length ? <div className="source-list">{rows.map(s => <div className="source-row" key={s.id}><span className="source-icon"><Video size={23} /></span><div><strong>{s.filename || s.name || "Source video"}</strong><small>{s.duration ? `${Math.round(s.duration)} seconds · ` : ""}{s.width && s.height ? `${s.width} × ${s.height} · ` : ""}{date(s.created_at)}</small></div><Badge tone="mint">Rights recorded</Badge><button className="button secondary small-button" onClick={() => newWork()}>Create clips<ArrowRight size={14} /></button></div>)}</div> : <Empty icon={UploadCloud} title="Good stories start with good source material" text="Upload an MP4, MOV, or WebM you own or have permission to use. Originals are preserved." action={<button className="button primary" onClick={() => newWork()}><UploadCloud size={16} />Upload source video</button>} />}</section>}
 
 
+
+      {section === "Generated Clips" && jobs.filter(j=>['queued','processing','failed','blocked'].includes(j.status)).map(j=><Job key={j.id} job={j}/>)}
 
       {["Generated Clips", "AI Video Editor"].includes(section) && (rows.length ? <div className="clip-grid">{rows.map(c => <ClipCard key={c.id} clip={c} onClick={() => void openClip(c)} />)}</div> : <section className="panel"><Empty icon={section === "AI Video Editor" ? Scissors : Film} title={section === "AI Video Editor" ? "Your edits, down to the frame" : "Your first clip belongs here"} text="Create a clip from an authorized source, then preview, adjust its timing, review compliance, and download the real MP4." action={<button className="button primary" onClick={() => newWork()}><Scissors size={15} />Create a clip</button>} /></section>)}
 
@@ -248,6 +247,7 @@ export default function Factory() {
 
 
 
+      {section === "Settings" && <details className="panel form-body"><summary>Saved campaign and publication records</summary><div className="button-row">{(['Content Rewards','Publishing Queue','Connected Accounts','Submissions'] as Section[]).map(name=><button className="button secondary" key={name} onClick={()=>go(name)}>{name==='Content Rewards'?'Saved campaigns':name}</button>)}</div></details>}
       {section === "Settings" && <WorkspaceSettings localNoAuth={localNoAuth} config={config} freeMode={freeMode} aiReady={aiReady} user={user} refresh={refresh} notify={notify} signIn={()=>setAuth(true)} signOut={async()=>{await api("/auth/logout",{method:"POST"});setUser(null);setData({metrics:{}});notify("Signed out of your workspace.");}}/>}
 
       <footer className="footer"><span><span className="tiny-dot" />Creative control. Your computer.</span><span>AI Clip Factory<span className="footer-version">v0.1</span></span></footer>

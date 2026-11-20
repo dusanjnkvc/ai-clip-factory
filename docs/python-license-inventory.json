@@ -708,5 +708,14 @@
       "websockets-17.4.dist-info/licenses/LICENSE"
     ],
     "license_classifiers": []
+  },
+  {
+    "name": "yt-dlp",
+    "version": "2026.10.26",
+    "license": "Unlicense",
+    "license_files": [
+      "yt_dlp-2026.10.26.dist-info/licenses/LICENSE"
+    ],
+    "license_classifiers": []
   }
 ]

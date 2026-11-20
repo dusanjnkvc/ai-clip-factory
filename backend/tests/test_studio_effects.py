@@ -54,3 +54,24 @@ def test_output_presets_render_actual_dimensions_and_keep_source(tmp_path,monkey
     rendered=render_clip(source,plan,{},tmp_path/'rendered.mp4')
     assert (rendered['width'],rendered['height'])==dimensions and rendered['decode_verified']
     assert source.exists()
+
+
+def test_one_polish_pass_rechecks_actual_output_and_preserves_original_source(tmp_path,monkeypatch):
+    from app.services.local_auto import LocalAutoPipelineService
+    from app.services.media import sha256_file
+    from test_pipeline import sample_metadata
+    monkeypatch.setenv('LOCAL_AI_ENCODER','libx264')
+    source=tmp_path/'original.mp4'
+    run_media([ffmpeg_binary(),'-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=30','-t','2.2','-c:v','libx264',str(source)])
+    original_hash=sha256_file(source);plan=sample_plan();plan['framing']='crop'
+    service=LocalAutoPipelineService({'studio':True});monkeypatch.setattr(service.provider,'unload',lambda:None)
+    checked=[]
+    def review(path,updated,metadata):
+        checked.append(sha256_file(path))
+        return {'visual':{'model_review':{'framing':75}},'suggestions':[]}
+    monkeypatch.setattr(service,'evaluate_render',review)
+    output=tmp_path/'clip.mp4';initial=service.render_clip(source,plan,sample_transcript(),output)
+    result,evaluation=service.polish_render(source,plan,sample_transcript(),output,initial,sample_metadata(),{'visual':{'model_review':{'framing':30}},'suggestions':[{'action':'fit_gameplay'}]},'fast')
+    assert evaluation['optimization']['status']=='applied' and len(checked)==1
+    assert result['decode_verified'] and result['sha256']==sha256_file(output)==checked[0]
+    assert plan['framing']=='fit' and sha256_file(source)==original_hash

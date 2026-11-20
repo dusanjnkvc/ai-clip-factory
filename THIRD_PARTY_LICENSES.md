@@ -9,7 +9,7 @@ This record covers the local Ultimate upgrade. Source code, separately installed
 | [Chopify](https://github.com/mehbul/chopify/tree/d576927bf3b764733c97ac1ad324aa9957b0885d) | MIT, Copyright 2026 Mehbul Islam | Studied `visual.py`, `score_clips.py`, caption/render and project modules. Equivalent implementations use existing bounded scene/frame/audio analysis, source-bound deduplication and persistent jobs. No source module copied. |
 | [AutoShorts](https://github.com/shubhxtech/AutoShorts/tree/72d7f4e8bfb763f3f6cf5647cbfafd2b14c76edd) | MIT, Copyright 2026 shubhxtech | Studied `render/edl.py`, `render/plan.py`, `render/audio.py`, `render/sfx.py`, `understand/signals.py` and dependency configuration. Equivalent validated edit decisions and restrained source-driven effects extend the existing renderer. No source module or bundled asset copied. |
 
-Both MIT licenses permit commercial use/modification/distribution subject to retaining their copyright and permission notices in copies/substantial portions. We do not install either independent application. Chopify's downloader is unnecessary for local authorized originals. AutoShorts' MLX/macOS paths, Torch alignment, faceless generation, social automation and asset bundle are not imported: they add hardware/dependency/rights requirements outside this pipeline. Their heuristic success-language is not evidence that a game event or viral outcome occurred.
+Both MIT licenses permit commercial use/modification/distribution subject to retaining their copyright and permission notices in copies/substantial portions. We do not install either independent application. Chopify's downloader was not copied; optional URL import uses the separately installed yt-dlp Python package. AutoShorts' MLX/macOS paths, Torch alignment, faceless generation, social automation and asset bundle are not imported: they add hardware/dependency/rights requirements outside this pipeline. Their heuristic success-language is not evidence that a game event or viral outcome occurred.
 
 ## Selected runtime components
 
@@ -24,6 +24,7 @@ Both MIT licenses permit commercial use/modification/distribution subject to ret
 | NumPy | BSD-3-Clause with bundled dependency notices | Audio/frame arithmetic |
 | PyAV | BSD-3-Clause wrapper; linked FFmpeg terms apply separately | Transitive speech dependency; native decoding uses safe FFmpeg |
 | pypdf | BSD-3-Clause | Local campaign PDF text |
+| yt-dlp 2026.10.26 | Unlicense for the Python package; bundled executables and dependencies can carry additional terms | Optional authorized public YouTube import; installed locally, no executable bundled |
 | FastAPI, SQLAlchemy, Alembic, httpx, Pydantic, React, Next.js | MIT (retain notices); dependencies have separate licenses | Existing app/API/storage |
 | cryptography | Apache-2.0 OR BSD-3-Clause, bundled OpenSSL/Rust notices | Existing encrypted OAuth tokens |
 | Tesseract (optional) | Apache-2.0; language data licenses must be retained | Separately installed local OCR |

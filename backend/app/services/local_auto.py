@@ -8,6 +8,7 @@ from .local_highlights import rank_highlights
 from .local_timeline import build_timelines
 from .local_metadata import generate_package
 from .trends import TrendResearch
+from .media import PipelineError
 
 
 class LocalAutoPipelineService(PipelineService):
@@ -44,10 +45,15 @@ class LocalAutoPipelineService(PipelineService):
         if self.options.get('studio'):
             bounds['min_duration']=max(rules.get('min_duration') or 1,self.options.get('minimum_duration',6))
             bounds['max_duration']=min(rules.get('max_duration') or 180,self.options.get('maximum_duration',20))
-        ranked = rank_highlights(self.analysis,bounds,self.options.get('duration',20),platform=self.options.get('platform','youtube'))
+        ranked = rank_highlights(self.analysis,bounds,self.options.get('duration',20),platform=self.options.get('platform','youtube'),count=self.options.get('clip_count',1) if self.options.get('studio') else 3,exclude_static_cards=bool(self.options.get('studio')))
         self.progress('Evaluating eligible edit plans locally',58)
-        timelines = build_timelines(self.analysis,ranked,bounds,provider=self.provider,
-                                    intensity=self.options.get('intensity','balanced'),cancel=self.cancel,choose_styles=bool(self.options.get('studio')))
+        batches=[]
+        for offset in range(0,max(1,len(ranked['candidates'])),3):
+            batches.append(build_timelines(self.analysis,{**ranked,'candidates':ranked['candidates'][offset:offset+3]},bounds,provider=self.provider,
+                                    intensity=self.options.get('intensity','balanced'),cancel=self.cancel,choose_styles=bool(self.options.get('studio'))))
+        timelines={**batches[0],'candidates':[c for b in batches for c in b['candidates']],
+            'evaluations':[e for b in batches for e in b['evaluations']]}
+        timelines['winner_id']=max(timelines['evaluations'],key=lambda e:e['score'])['candidate_id']
         self.bundle={'analysis_identity':self.analysis['cache_identity'],'ranking':ranked,'timelines':timelines}
         self.progress('Checking the proposed ending against actual source footage',61)
         from .local_tail import review_ending
@@ -63,6 +69,9 @@ class LocalAutoPipelineService(PipelineService):
                 plan['output_preset']=self.options.get('output_preset','portrait_1080')
                 plan['required_on_video_text']=rules.get('required_on_video_text',[])
                 profile=self.options.get('editing_profile','automatic')
+                if profile=='opus':
+                    for shot in plan['scenes']:shot.update(effect='none',transition='cut',zoom=1)
+                    plan['subtitle_style']='bold'
                 if profile=='automatic':
                     assessment=next(e for e in timelines['evaluations'] if e['candidate_id']==candidate['id'])
                     profile=assessment['recommended_style']
@@ -84,7 +93,7 @@ class LocalAutoPipelineService(PipelineService):
                     else:plan['subtitle_style']='clean'
                     if any(o.get('visual_treatment')=='high_contrast' for o in observations):
                         for shot in plan['scenes']:shot.update(effect='contrast',effect_intensity=.4)
-                plan['edit_dna']['visual_effects']={'clean':'Clean Professional: restrained source cuts and readable captions','cinematic':'Cinematic: restrained fades and source-driven motion','gaming':'Gaming Viral: source-driven cuts and contrast'}.get(profile,'Measured reference pacing and supported transitions')
+                plan['edit_dna']['visual_effects']={'opus':'Opus-Style Gaming: full gameplay, synchronized blurred background, restrained cuts and bold headline','clean':'Clean Professional: restrained source cuts and readable captions','cinematic':'Cinematic: restrained fades and source-driven motion','gaming':'Gaming Viral: source-driven cuts and contrast'}.get(profile,'Measured reference pacing and supported transitions')
                 plan['semantic_notes'].append('Automatic style follows source-bound pacing; reference features are measurements, not copied audiovisual content.')
             key=str(plan['start'])
             self.bundle['drafts'][key]={'ending_checks':checks,'style':candidate['style']}
@@ -105,7 +114,10 @@ class LocalAutoPipelineService(PipelineService):
         if self.options.get('studio'):
             from .local_hooks import generate_hooks
             from .local import LocalPipelineService
-            hooks=generate_hooks(self.provider,plan,metadata_context)
+            try:hooks=generate_hooks(self.provider,plan,metadata_context)
+            except Exception:
+                if self.cancel.is_set():raise
+                hooks={'selected':plan['hook'],'candidates':[]}
             plan['hook']=hooks['selected'];plan['show_hook']=True
             draft['hook_candidates']=hooks['candidates']
             self.bundle.update(research=research,platform='youtube')
@@ -159,6 +171,16 @@ class LocalAutoPipelineService(PipelineService):
             return result
         except Exception as exc:
             if self.cancel.is_set():raise
+            try:
+                from .studio_metadata import observation_package
+                recovered=observation_package(plan,context,rules)
+                block=recovered['youtube']
+                plan['title']=block['variants'][block['recommended_index']]['title']
+                self.used_titles=[*getattr(self,'used_titles',[]),plan['title']]
+                plan['semantic_notes'].append('Automatic publication copy recovered from actual rendered observations: '+str(exc)[:150])
+                return recovered
+            except PipelineError:
+                pass
             for block in metadata.values():
                 block['generation_status']='unavailable'
                 for variant in block['variants']:variant['reasoning']='Final metadata generation failed; manual correction required: '+str(exc)[:200]
@@ -174,6 +196,37 @@ class LocalAutoPipelineService(PipelineService):
         self.last_render_info=result
         if self.cancel.is_set(): raise InferenceCancelled('AUTO CREATE cancelled; original source preserved.')
         return result
+
+    def polish_render(self,source_path,plan,transcript,output,render,metadata,evaluation,mode):
+        """One measured readability/framing repair, never an open-ended score loop."""
+        import copy
+        from pathlib import Path
+        improved=copy.deepcopy(plan);actions=[]
+        for suggestion in (evaluation or {}).get('suggestions',[]):
+            action=suggestion.get('action')
+            if action=='fit_gameplay' and improved.get('framing')!='fit':
+                improved['framing']='fit';actions.append(action)
+            elif action=='clean_captions' and improved.get('subtitle_style')!='clean':
+                improved['subtitle_style']='clean';actions.append(action)
+        if not actions:return render,evaluation
+        alternate=Path(output).with_name(Path(output).stem+'-polished.mp4')
+        try:
+            self.provider.unload()
+            self.progress('Applying one bounded readability/framing correction',89)
+            updated=self.render_clip(source_path,improved,transcript,alternate,mode=mode)
+            checked=self.evaluate_render(alternate,improved,metadata)
+            before=(evaluation or {}).get('visual',{}).get('model_review',{})
+            after=(checked or {}).get('visual',{}).get('model_review',{})
+            factors=['readability' if a=='clean_captions' else 'framing' for a in actions]
+            if not after or any(after.get(k,0)<before.get(k,0) for k in factors):
+                return render,{**evaluation,'optimization':{'status':'original_retained','attempts':1,'actions':actions,'reason':'The sampled check did not establish a non-degrading correction.'}}
+            alternate.replace(output);plan.clear();plan.update(improved)
+            return updated,{**checked,'optimization':{'status':'applied','attempts':1,'actions':actions,'limitation':'Sparse editorial assessment; no semantic or engagement guarantee.'}}
+        except Exception:
+            if self.cancel.is_set():raise
+            return render,{**evaluation,'optimization':{'status':'original_retained','attempts':1,'actions':actions,'reason':'Correction unavailable; original decoded render preserved.'}}
+        finally:
+            alternate.unlink(missing_ok=True)
 
     def evaluate_render(self,path,plan,metadata):
         from .viral_score import evaluate_render

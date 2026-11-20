@@ -929,10 +929,11 @@ class AutoCreate(BaseModel):
     intensity: Literal['gentle','balanced','energetic'] = 'balanced'
     platform: Literal['youtube','tiktok','instagram'] = 'youtube'
     original_creator_confirmed: bool = False
-    clip_count: int = Field(default=1,ge=1,le=3)
+    clip_count: int = Field(default=1,ge=1,le=10)
     studio: bool = False
     processing_mode: Literal['fast','balanced','quality'] = 'balanced'
-    editing_profile: Literal['automatic','gaming','cinematic','clean','reference'] = 'automatic'
+    editing_profile: Literal['opus','automatic','gaming','cinematic','clean','reference'] = 'automatic'
+    destination: Literal['both','youtube','tiktok'] = 'both'
     framing: Literal['fit','crop'] = 'fit'
     output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
     reference_profile: dict | None = None
@@ -951,7 +952,8 @@ def auto_create(body: AutoCreate, request: Request, user: User=Depends(current_u
         if not campaign.rules and campaign.brief.strip(): analyze_campaign_record(db,campaign)
     else:
         from .services.schemas import CampaignRules
-        general=CampaignRules(campaign_name='General local creation',allowed_platforms=[body.platform],draft_approval_required=False,
+        destinations=['youtube','tiktok'] if body.studio and body.destination=='both' else [body.platform]
+        general=CampaignRules(campaign_name='General local creation',allowed_platforms=destinations,draft_approval_required=False,
                               evidence=[{'field':'allowed_platforms','quote':body.platform,'source':'user_selected_platform'}]).model_dump()
         campaign=Campaign(user_id=user.id,name='General local creation',brief='No external campaign supplied.',rules=general,evidence=general['evidence'],review_required=False,status='active')
         db.add(campaign);db.flush()

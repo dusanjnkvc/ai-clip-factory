@@ -301,6 +301,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # phrase visible over its exact interval, including in karaoke style.
         events.append(f"Dialogue: 0,{_ass_time(cue['start'])},{_ass_time(cue['end'])},Default,,0,0,0,,{_ass_escape(cue['text'])}")
     duration = sum(output_duration(s) for s in expanded_scenes(plan.scenes))
+    for overlay in plan.text_overlays:
+        events.append(f"Dialogue: 3,{_ass_time(overlay.start)},{_ass_time(overlay.end)},Default,,0,0,0,,{_ass_escape(overlay.text)}")
     if plan.show_hook and plan.hook:
         events.append(f"Dialogue: 1,0:00:00.00,{_ass_time(min(2.5, duration))},Hook,,0,0,0,,{_ass_escape(plan.hook)}")
     if plan.required_on_video_text:
@@ -322,7 +324,7 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
         raise PipelineError("Rendering must never overwrite original source media")
     info = probe_media(source)
     canvas_w,canvas_h=OUTPUT_PRESETS[plan.output_preset]
-    output_fps=min(60,max(1,info.get('fps') or 30))
+    output_fps=plan.output_fps
     if any(scene.end > info["duration"] + .05 for scene in plan.scenes):
         raise PipelineError("Editing timeline exceeds the source video duration")
     if mode not in {"fast", "quality"}:
@@ -366,7 +368,7 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
             if scene.freeze:polish+=f',tpad=stop_mode=clone:stop_duration={scene.freeze:.4f}'
             if plan.framing=='fit':
                 graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},{clock},split=2[fg{index}][bg{index}]")
-                graph.append(f"[bg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},boxblur=24:2[blur{index}]")
+                graph.append(f"[bg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},gblur=sigma=24,eq=brightness=-0.06[blur{index}]")
                 graph.append(f"[fg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease[fit{index}]")
                 graph.append(f"[blur{index}][fit{index}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps={output_fps:.6f}{polish}[v{index}]")
             else:

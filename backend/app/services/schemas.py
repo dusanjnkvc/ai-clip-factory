@@ -227,6 +227,7 @@ class ClipPlan(Model):
     audio_treatment: Literal["source", "mute"] = "source"
     framing: Literal["crop", "fit"] = "crop"
     output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
+    output_fps: Literal[30,60] = 30
     required_on_video_text: list[str] = Field(default_factory=list, max_length=6)
     audio_volume: float = Field(default=1,ge=0,le=2)
     audio_denoise: bool = False
@@ -236,6 +237,7 @@ class ClipPlan(Model):
     caption_size: int | None = Field(default=None,ge=30,le=100)
     caption_margin: int = Field(default=350,ge=200,le=650)
     sound_cues: list[SoundCue] = Field(default_factory=list,max_length=6)
+    text_overlays: list[Segment] = Field(default_factory=list,max_length=6)
 
     @model_validator(mode="after")
     def timeline(self):
@@ -249,6 +251,7 @@ class ClipPlan(Model):
         duration = sum(output_duration(s) for s in expanded_scenes(self.scenes))
         if any(c.end>duration+.001 for c in self.manual_captions):
             raise ValueError('Manual caption cues use output seconds and must remain inside the rendered duration.')
+        if any(c.end>duration+.001 for c in self.text_overlays):raise ValueError('Text overlays must remain inside the rendered timeline.')
         if any(c.start>=duration for c in self.sound_cues):raise ValueError('Sound cues must be inside the rendered output.')
         if sum(s.effect=='flash' for s in self.scenes)>2:raise ValueError('Use at most two restrained flash accents per clip.')
         if not 1 <= duration <= 600:

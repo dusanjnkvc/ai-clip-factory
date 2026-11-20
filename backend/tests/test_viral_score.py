@@ -21,9 +21,9 @@ def test_actual_render_samples_score_components_and_metadata_changes(tmp_path):
     assert score['score']==pytest.approx(sum(score['components'][k]*score['weights'][k] for k in score['weights']),abs=.02)
     metadata=sample_metadata();metadata['youtube']['variants'][0]['title']=' '.join(['Repeated']*70)
     changed=score_metadata(result['visual'],metadata)
-    assert changed['youtube']['components']['title']<score['components']['title']
+    assert changed['youtube']['components']['metadata']<score['components']['metadata']
     assert changed['youtube']['components']['entertainment']==score['components']['entertainment']
-    assert changed['youtube']['components']['research']==0
+    assert set(score['components'])==set(weights())
 
 
 def test_score_weights_reject_invalid_and_normalize(monkeypatch):

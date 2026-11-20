@@ -34,12 +34,18 @@ def test_project_defaults_three_drafts_persist_and_start_is_idempotent(environme
     assert worker.run_once()
     detail=client.get(f"/api/studio/projects/{project['id']}").json()
     assert len(detail['drafts'])==3 and all(d['media_info']['decode_verified'] for d in detail['drafts'])
+    gallery=client.get('/api/studio/clips').json()
+    assert len(gallery)==3 and gallery[0]['campaign_name']=='Authorized campaign'
+    assert 'publishing_jobs' in gallery[0] and gallery[0]['decision']=='needs_review'
+    custom=client.post('/api/studio/projects',json={'name':'Five requested','source_id':source,'clip_count':5,'destination':'both'})
+    assert custom.status_code==200 and custom.json()['options']['clip_count']==5
     assert all(d['decision']=='needs_review' for d in detail['drafts'])
     clip=detail['drafts'][0]
     assert client.post(f"/api/studio/drafts/{clip['id']}/decision",json={'version':1,'decision':'approved','note':'I reviewed the video.'}).status_code==409
     response=client.post(f"/api/studio/drafts/{clip['id']}/decision",json={'version':1,'decision':'rejected','note':'Please adjust the framing.'})
     assert response.status_code==200
     assert client.post(f"/api/studio/drafts/{clip['id']}/decision",json={'version':2,'decision':'rejected','note':'Wrong version review.'}).status_code==409
+    assert client.post(f"/api/studio/drafts/{clip['id']}/edit",json={'version':2,'metadata':sample_metadata()}).status_code==409
     assert client.get(f"/api/studio/projects/{project['id']}/export").status_code==409
     # The generated fixture is ours and contains only known test patterns/audio.
     review=client.post(f"/api/clips/{clip['id']}/review",json={'note':'Reviewed the actual generated test fixture.',
@@ -89,3 +95,56 @@ def test_directory_import_restricts_paths_and_preserves_original(environment,mon
     response=client.delete('/api/studio/cache')
     assert response.status_code==200 and response.json()['removed_files']==1
     assert original.is_file() and not cached.exists()
+
+
+def test_single_clip_edit_restore_and_selective_regeneration_preserve_other_fields(environment,monkeypatch):
+    import copy
+    from app.services.schemas import Metadata
+    from test_social import setup_social,seed_clip
+    from app.models import ClipVersion,ProcessingJob,EditingPlan
+    client,factory,config=environment;user=register(client);setup_social(monkeypatch);enable(monkeypatch)
+    clip_id,_=seed_clip(factory,user['id'],config)
+    with factory() as db:
+        clip=db.get(RenderedClip,clip_id);original=Metadata.model_validate(clip.metadata_json).model_dump()
+        db.add(ClipVersion(clip_id=clip.id,version=1,plan=db.get(EditingPlan,clip.editing_plan_id).plan,metadata_json=original,storage_key=clip.storage_key));db.commit()
+    edited=copy.deepcopy(original);edited['youtube']['variants'][0]['description']='My retained manual description.'
+    edited['tiktok']['generation_status']='manual'
+    response=client.post(f'/api/studio/drafts/{clip_id}/edit',json={'version':1,'metadata':edited})
+    assert response.status_code==200,response.text
+    assert response.json()['action']=='metadata_saved'
+    generated=copy.deepcopy(original)
+    for v in generated['youtube']['variants']:v['title']='Regenerated title'
+    monkeypatch.setattr('app.services.studio_metadata.rendered_context',lambda *args:{'findings':[]})
+    monkeypatch.setattr('app.services.studio_metadata.generate_studio_package',lambda *args,**kw:{'metadata':generated})
+    response=client.post(f'/api/studio/drafts/{clip_id}/regenerate-component',json={'version':2,'component':'metadata','platform':'youtube','field':'title'})
+    assert response.status_code==200,response.text
+    with factory() as db:
+        clip=db.get(RenderedClip,clip_id)
+        assert clip.current_version==3 and clip.metadata_json['tiktok']==edited['tiktok']
+        assert clip.metadata_json['youtube']['variants'][0]['description']=='My retained manual description.'
+        assert clip.metadata_json['youtube']['variants'][0]['opening_hook']==edited['youtube']['variants'][0]['opening_hook']
+        assert db.scalar(select(ProcessingJob.id).where(ProcessingJob.status=='queued')) is None
+    response=client.post(f'/api/studio/drafts/{clip_id}/edit',json={'version':3,'restore_version':1})
+    assert response.status_code==200,response.text
+    assert response.json()['action']=='render_queued'
+    with factory() as db:
+        job=db.get(ProcessingJob,response.json()['job']['id'])
+        assert job.clip_count==1 and job.payload['clip_id']==clip_id
+        assert job.payload['metadata']==original and db.get(RenderedClip,clip_id).current_version==3
+        assert len(list(db.scalars(select(ClipVersion).where(ClipVersion.clip_id==clip_id))))==3
+
+
+def test_bounded_polish_retains_decoded_original_when_second_render_fails(tmp_path,monkeypatch):
+    import copy
+    from app.services.media import PipelineError
+    service=LocalAutoPipelineService({'studio':True})
+    original=tmp_path/'clip.mp4';original.write_bytes(b'Already decoded original fixture')
+    plan=sample_plan();plan['subtitle_style']='bold';before=copy.deepcopy(plan)
+    monkeypatch.setattr(service.provider,'unload',lambda:None)
+    def unavailable(*args,**kw):raise PipelineError('Controlled second-render failure')
+    monkeypatch.setattr(service,'render_clip',unavailable)
+    render={'decode_verified':True,'sha256':'controlled-original'}
+    evaluation={'suggestions':[{'action':'clean_captions'}],'visual':{'model_review':{'readability':30}}}
+    result,score=service.polish_render(tmp_path/'source.mp4',plan,sample_transcript(),original,render,sample_metadata(),evaluation,'fast')
+    assert result==render and plan==before and original.read_bytes()==b'Already decoded original fixture'
+    assert score['optimization']['attempts']==1 and score['optimization']['status']=='original_retained'

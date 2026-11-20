@@ -48,6 +48,12 @@ def test_visual_evidence_beats_a_louder_static_menu_under_default_rubric():
     assert "loudness" in best["factors"]["audio"]["explanation"].lower()
 
 
+def test_gaming_creation_excludes_known_static_cards_without_filling_requested_count():
+    result=rank_highlights(source_analysis(),rules(),target_duration=10,count=5,exclude_static_cards=True)
+    assert len(result['candidates'])==1
+    assert result['candidates'][0]['start']<=90<result['candidates'][0]['end']
+
+
 def test_alternate_windows_around_one_finding_are_not_separate_moments():
     result=rank_highlights(source_analysis(),rules(),target_duration=10)
     candidates=result['candidates']

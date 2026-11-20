@@ -280,3 +280,12 @@ class PlatformObservation(Record, Base):
     post_id: Mapped[str] = mapped_column(ForeignKey('published_posts.id'), index=True)
     metrics: Mapped[dict] = mapped_column(JSON)
     provenance: Mapped[str] = mapped_column(String(120))
+
+
+class AccountObservation(Record, Base):
+    __tablename__ = 'account_observations'
+    account_id: Mapped[str] = mapped_column(ForeignKey('connected_accounts.id'),index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'),index=True)
+    platform: Mapped[str] = mapped_column(String(30))
+    metrics: Mapped[dict] = mapped_column(JSON)
+    provenance: Mapped[str] = mapped_column(String(120))
