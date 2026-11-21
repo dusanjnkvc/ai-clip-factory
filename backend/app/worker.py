@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy import select, update, or_, text
 from .db import SessionLocal
 from .models import (ProcessingJob, Transcript, SourceVideo, MediaRightsRecord, ClipCandidate,
-    EditingPlan, RenderedClip, ClipVersion, ComplianceCheck, AuditLog, now)
+    EditingPlan, RenderedClip, ClipVersion, ComplianceCheck, AuditLog, DraftEvaluation, now)
 from .storage import materialize, put_file
 from .usage import record_usage
 from .runtime import free_mode, create_pipeline_service
@@ -34,21 +34,45 @@ def claim_job():
         # plans and completed clips, so crash recovery does not restart the batch.
         db.execute(update(ProcessingJob).where(ProcessingJob.status == 'processing', ProcessingJob.lease_until < now()).values(status='queued', stage='Recovering interrupted job'))
         db.commit()
+        in_flight = list(db.scalars(select(ProcessingJob).where(ProcessingJob.status == 'processing')))
+        if any(item.payload.get('processing_provider') == 'local_ai' for item in in_flight): return None
         occupied = select(ProcessingJob.source_id).where(ProcessingJob.status == 'processing')
         candidate = db.scalar(select(ProcessingJob).where(ProcessingJob.status == 'queued', ~ProcessingJob.source_id.in_(occupied)).order_by(ProcessingJob.created_at).limit(1))
         if not candidate:
             return None
+        if candidate.payload.get('processing_provider') == 'local_ai' and in_flight: return None
         claimed = db.execute(update(ProcessingJob).where(ProcessingJob.id == candidate.id, ProcessingJob.status == 'queued').values(status='processing', stage='Preparing source', attempts=ProcessingJob.attempts + 1, lease_until=now() + timedelta(minutes=30)))
         db.commit()
         return candidate.id if claimed.rowcount else None
 
 def progress(job_id, stage, percent):
     with SessionLocal() as db:
-        db.execute(update(ProcessingJob).where(ProcessingJob.id == job_id).values(stage=stage, progress=percent, lease_until=now() + timedelta(minutes=30)))
+        db.execute(update(ProcessingJob).where(ProcessingJob.id == job_id, ProcessingJob.status == 'processing').values(stage=stage, progress=percent, lease_until=now() + timedelta(minutes=30)))
         db.commit()
 
 def process_job(job_id):
-    service = create_pipeline_service()
+    with SessionLocal() as lookup:
+        snapshot = lookup.get(ProcessingJob, job_id)
+        auto = snapshot.payload.get('processing_provider') == 'local_ai'
+        options = snapshot.payload.get('options', {})
+        stored_bundle=snapshot.payload.get('auto_result',{})
+    if auto:
+        from .services.local_auto import LocalAutoPipelineService
+        service = LocalAutoPipelineService(options, lambda stage,percent:progress(job_id,stage,percent))
+        service.bundle=stored_bundle
+        import threading
+        def watch_cancel():
+            while not service.cancel.wait(.5):
+                with SessionLocal() as check:
+                    current = check.get(ProcessingJob, job_id)
+                    if not current or current.status not in {'queued','processing'}:
+                        return
+                    if current.payload.get('cancel_requested'):
+                        service.cancel.set()
+                        return
+        threading.Thread(target=watch_cancel, daemon=True).start()
+    else:
+        service = create_pipeline_service()
     started = time.monotonic()
     with SessionLocal() as db:
         job = db.get(ProcessingJob, job_id)
@@ -63,18 +87,19 @@ def process_job(job_id):
         transcript = transcript_row.content if transcript_row else None
         with materialize(source.storage_key) as source_path, tempfile.TemporaryDirectory(prefix='acf-render-') as temp:
             work = Path(temp)
+            if auto: service.source_path = source_path
             if transcript is None:
                 progress(job_id, 'Reading optional local subtitles' if free_mode() else 'Transcribing source with hosted AI', 8)
                 transcript = service.transcribe(source_path, cache_path=work / 'transcript.json')
                 record_usage(db, service, job.user_id, job.id)
-                db.add(Transcript(source_id=source.id, content=transcript, provider=os.getenv('TRANSCRIPTION_MODEL', 'whisper-1')))
+                db.add(Transcript(source_id=source.id, content=transcript, provider=transcript.get('provider',os.getenv('TRANSCRIPTION_MODEL','whisper-1'))))
                 db.commit()
             existing = list(db.scalars(select(EditingPlan).join(ClipCandidate).where(ClipCandidate.job_id == job_id).order_by(ClipCandidate.created_at)))
             if not existing:
-                progress(job_id, 'Validating your manual clip selection' if free_mode() else 'Selecting distinct moments and planning edits', 20)
+                progress(job_id, 'Selecting distinct local-AI moments and planning edits' if auto else 'Validating your manual clip selection' if free_mode() else 'Selecting distinct moments and planning edits', 52 if auto else 20)
                 if job.payload.get('plan'):
                     plans=[job.payload['plan']]
-                elif free_mode():
+                elif free_mode() and not auto:
                     if not job.payload.get('manual_selection'):
                         from .services.media import ConfigurationError
                         raise ConfigurationError('Free local rendering needs a manual selection. Create a new clip with start/end times; no AI request was made.')
@@ -93,18 +118,51 @@ def process_job(job_id):
                     existing.append(row)
                 db.commit()
             completed_ids = set(db.scalars(select(RenderedClip.editing_plan_id).where(RenderedClip.job_id == job_id)))
+            if auto:
+                from .publishing import selected_metadata
+                service.used_titles=[selected_metadata(c.metadata_json,'youtube').get('title','') for c in db.scalars(select(RenderedClip).where(RenderedClip.job_id==job_id))]
             for index, plan_row in enumerate(existing):
                 if stopping:
                     raise InterruptedError('Worker stopping; job will resume.')
                 if plan_row.id in completed_ids or index < job.completed_clips:
                     continue
-                progress(job_id, f'Rendering clip {index + 1} of {len(existing)} · metadata in parallel', 25 + int(index / max(1, len(existing)) * 65))
+                if auto:
+                    total=max(1,len(existing))
+                    service.progress=lambda stage,percent,i=index:progress(job_id,f'Draft {i+1} of {total} · '+stage,
+                        62+int(i/total*36)+int(max(0,min(1,(percent-65)/30))*36/total))
+                    progress(job_id,f'Preparing local draft {index+1} of {total}',62+int(index/total*36))
+                else:
+                    progress(job_id, f'Rendering clip {index + 1} of {len(existing)} · metadata in parallel', 25 + int(index / max(1, len(existing)) * 65))
                 output = work / f'{plan_row.id}.mp4'
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    metadata_future = pool.submit(lambda: job.payload['metadata']) if job.payload.get('metadata') else pool.submit(service.generate_metadata, plan_row.plan, rules)
+                plan_row.plan={**plan_row.plan,'required_on_video_text':rules.get('required_on_video_text',[])}
+                if auto:
+                    # Finish inference and release its model before CPU rendering.
+                    metadata = job.payload['metadata'] if job.payload.get('metadata') else service.generate_metadata(plan_row.plan, rules)
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(plan_row, 'plan')
+                    db.refresh(job, ['payload'])
+                    if job.payload.get('cancel_requested'): service.cancel.set()
+                    job.payload = {**job.payload, 'auto_result': service.bundle}
+                    db.commit()
                     render = service.render_clip(source_path, plan_row.plan, transcript, output, mode=job.mode)
-                    metadata = metadata_future.result()
+                else:
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        metadata_future = pool.submit(lambda: job.payload['metadata']) if job.payload.get('metadata') else pool.submit(service.generate_metadata, plan_row.plan, rules)
+                        render = service.render_clip(source_path, plan_row.plan, transcript, output, mode=job.mode)
+                        metadata = metadata_future.result()
                 record_usage(db, service, job.user_id, job.id)
+                from .services.campaign_requirements import enforce_metadata
+                metadata={p:{**block,'variants':[enforce_metadata(v,rules) for v in block['variants']]} for p,block in metadata.items()}
+                evaluation=service.evaluate_render(output,plan_row.plan,metadata) if auto and options.get('studio') else None
+                if auto and options.get('studio') and not job.payload.get('metadata') and evaluation:
+                    render,evaluation=service.polish_render(source_path,plan_row.plan,transcript,output,render,metadata,evaluation,job.mode)
+                if auto and options.get('studio') and not job.payload.get('metadata'):
+                    metadata=service.finalize_metadata(plan_row.plan,metadata,evaluation,rules)
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(plan_row,'plan')
+                    if evaluation and evaluation.get('visual'):
+                        from .services.viral_score import score_metadata
+                        evaluation={**evaluation,'platforms':score_metadata(evaluation['visual'],metadata,service.bundle.get('research'))}
                 compliance = service.check_compliance(plan_row.plan, metadata, rules, rights_payload, render, draft_approved=False)
                 target_id = job.payload.get('clip_id')
                 clip = db.get(RenderedClip, target_id) if target_id else None
@@ -114,7 +172,7 @@ def process_job(job_id):
                     clip.current_version += 1
                     clip.editing_plan_id=plan_row.id
                     clip.title=str(plan_row.plan.get('title') or plan_row.plan.get('hook') or 'Untitled clip')[:300]
-                    clip.media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path'}}
+                    clip.media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path','remotion_base_path'}}
                     clip.metadata_json=metadata
                     clip.edit_dna=plan_row.plan.get('edit_dna',{})
                     clip.compliance=compliance
@@ -122,13 +180,18 @@ def process_job(job_id):
                     clip.draft_approved=False
                 else:
                     clip = RenderedClip(user_id=job.user_id, job_id=job.id, campaign_id=job.campaign_id, source_id=source.id, editing_plan_id=plan_row.id,
-                        title=str(plan_row.plan.get('title') or plan_row.plan.get('hook') or 'Untitled clip')[:300], storage_key='pending', media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path'}}, metadata_json=metadata,
+                        title=str(plan_row.plan.get('title') or plan_row.plan.get('hook') or 'Untitled clip')[:300], storage_key='pending', media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path','remotion_base_path'}}, metadata_json=metadata,
                         edit_dna=plan_row.plan.get('edit_dna', {}), compliance=compliance, status='ready' if compliance.get('status') == 'PASS' else 'review')
                     db.add(clip)
                     db.flush()
                 key = f'{job.user_id}/clips/{clip.id}/v{clip.current_version}.mp4'
                 put_file(output, key)
+                if render.get('remotion_base_path'):
+                    base_key=f'{job.user_id}/clips/{clip.id}/v{clip.current_version}-base.mp4';put_file(render['remotion_base_path'],base_key)
+                    clip.media_info={**clip.media_info,'remotion_base_key':base_key}
                 clip.storage_key = key
+                if evaluation:
+                    db.add(DraftEvaluation(clip_id=clip.id,version=clip.current_version,artifact_sha256=render['sha256'],evaluation=evaluation))
                 db.add(ClipVersion(clip_id=clip.id, version=clip.current_version, plan=plan_row.plan, metadata_json=metadata, storage_key=key))
                 db.add(ComplianceCheck(clip_id=clip.id, version=clip.current_version, status=compliance['status'], checks=compliance.get('checks', []), rules_snapshot=rules))
                 job.completed_clips += 1
@@ -156,7 +219,7 @@ def run_once():
             job = db.get(ProcessingJob, job_id)
             # Do not automatically retry a paid external request after an ambiguous
             # timeout. Explicit retry resumes persisted stages and completed clips.
-            job.status = 'blocked' if isinstance(exc, ConfigurationError) else 'failed'
+            job.status = 'cancelled' if job.payload.get('cancel_requested') else 'blocked' if isinstance(exc, ConfigurationError) else 'failed'
             job.error = str(exc)[:1200]
             job.stage = 'Configuration required' if job.status == 'blocked' else 'Processing stopped; completed clips remain available'
             job.lease_until = None
@@ -167,6 +230,8 @@ def run_once():
 def main():
     global stopping
     logging.basicConfig(level=logging.INFO)
+    # Resumable/signed upload URLs contain temporary grants, not log text.
+    logging.getLogger('httpx').setLevel(logging.WARNING)
     def stop(*_):
         global stopping
         stopping = True
@@ -178,6 +243,9 @@ def main():
             continue
         if run_once():
             continue
+        from .performance import sync_idle_account
+        with SessionLocal() as db:
+            if sync_idle_account(db):continue
         time.sleep(2)
 
 if __name__ == '__main__':

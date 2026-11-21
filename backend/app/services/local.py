@@ -198,23 +198,10 @@ class LocalPipelineService(PipelineService):
             path = Path(attachment["path"])
             if not path.is_file() or path.stat().st_size > 15 * 1024 * 1024:
                 raise PipelineError("Campaign attachments must exist and be smaller than 15 MB.")
-            if path.suffix.lower() == ".pdf":
-                try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(str(path))
-                    if len(reader.pages) > 100:
-                        raise PipelineError("Campaign PDFs are limited to 100 pages.")
-                    extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
-                except PipelineError:
-                    raise
-                except Exception as exc:
-                    raise PipelineError("Unable to read this campaign PDF.") from exc
-                if extracted.strip():
-                    sources.append({"source": name, "text": extracted[:80000]})
-                else:
-                    notes.append(f"{name} has no extractable text. Paste its requirements; local mode does not perform OCR.")
-            else:
-                notes.append(f"Read {name} and enter its rules manually. Local mode does not interpret screenshots.")
+            from .campaign_documents import extract_document
+            extracted, warnings = extract_document(path, name)
+            sources.extend(extracted)
+            notes.extend(warnings)
         data = CampaignRules(uncertainties=notes).model_dump()
         evidence = []
         seen: dict[str, object] = {}
@@ -228,8 +215,51 @@ class LocalPipelineService(PipelineService):
             evidence.append({"field": field, "quote": line, "source": source, "verified_quote": True, "extraction_method": "labeled_text"})
 
         for source in sources:
-            for raw_line in source["text"].splitlines():
+            # A labeled heading followed by its value retains both in the quote.
+            lines = source["text"].splitlines()
+            for index, raw_line in enumerate(lines):
                 line = raw_line.strip()
+                if line.endswith(':') and index+1 < len(lines):
+                    line += ' ' + lines[index+1].strip()
+                scalar_labels = {'campaign name':'campaign_name','game':'game_name','game name':'game_name',
+                    'brand':'brand','required title':'required_title','deadline':'submission_deadline',
+                    'submission instructions':'submission_instructions'}
+                list_labels = {'required mentions':'required_mentions','required title phrase':'required_title_phrases',
+                    'required description':'required_description_phrases','required description phrase':'required_description_phrases',
+                    'required on-video text':'required_on_video_text','required on-screen text':'required_on_video_text',
+                    'required branding':'required_branding','logo requirements':'logo_requirements',
+                    'resolution':'resolution_requirements','music restrictions':'audio_restrictions',
+                    'content restrictions':'prohibited_content','required disclosure':'required_disclosures',
+                    'other mandatory instructions':'other_requirements'}
+                label, separator, value = line.partition(':')
+                if separator and value.strip():
+                    key = label.strip().casefold()
+                    if key in scalar_labels:
+                        set_field(scalar_labels[key], value.strip().strip('"'), source['source'], line)
+                    if key in list_labels:
+                        values = value.split() if key == 'required mentions' else [v.strip().strip('"') for v in value.split('|') if v.strip()]
+                        set_field(list_labels[key], values, source['source'], line)
+                    if key == 'prohibited platforms':
+                        mapping={'youtube':'youtube','youtube shorts':'youtube','tiktok':'tiktok','instagram':'instagram'}
+                        values=[v.strip().lower() for v in value.split(',')]
+                        if all(v in mapping for v in values):
+                            set_field('prohibited_platforms',[mapping[v] for v in values],source['source'],line)
+                        else:
+                            data['uncertainties'].append('Unsupported prohibited platform: '+value)
+                for label, field in [("Automated clipping", "automated_clipping_allowed"), ("AI generated videos", "ai_generated_allowed"), ("Music", "music_allowed"), ("AI voice", "ai_voice_allowed"), ("Paid promotion", "paid_promotion_allowed")]:
+                    restriction = re.fullmatch(re.escape(label) + r"\s*:\s*(allowed|permitted|yes|prohibited|not allowed|no)\.?", line, re.IGNORECASE)
+                    if restriction:
+                        set_field(field, restriction[1].casefold() in {"allowed", "permitted", "yes"}, source["source"], line)
+                original = re.fullmatch(r"original (?:creator )?footage\s*:\s*(required|yes|not required|no)\.?", line, re.IGNORECASE)
+                if original:
+                    set_field("original_footage_required", original[1].casefold() in {"required", "yes"}, source["source"], line)
+                if re.fullmatch(r"no automated clipping[.!]?", line, re.IGNORECASE):
+                    set_field("automated_clipping_allowed", False, source["source"], line)
+                if re.fullmatch(r"no (?:fully )?AI[- ]generated videos[.!]?", line, re.IGNORECASE):
+                    set_field("ai_generated_allowed", False, source["source"], line)
+                required_link = re.fullmatch(r"required links?\s*:\s*(.+)", line, re.IGNORECASE)
+                if required_link:
+                    set_field("required_links", required_link[1].split(), source["source"], line)
                 match = re.fullmatch(r"(?:allowed\s+|permitted\s+)?platforms?\s*:\s*(.+)", line, re.IGNORECASE)
                 if match:
                     values = re.split(r"\s*[,;/|]\s*", match[1].strip().rstrip("."))
@@ -256,7 +286,10 @@ class LocalPipelineService(PipelineService):
                     set_field("draft_approval_required", match[1].casefold() in {"required", "yes"}, source["source"], line)
         if data["min_duration"] is not None and data["max_duration"] is not None and data["min_duration"] > data["max_duration"]:
             data["contradictions"].append("Minimum duration exceeds maximum duration.")
+        if set(data['allowed_platforms']) & set(data['prohibited_platforms']):
+            data['contradictions'].append('A platform is both allowed and prohibited.')
         data["evidence"] = evidence
+        data = CampaignRules.model_validate(data).model_dump()
         return {"rules": data, "evidence": evidence, "review_required": True, "source_url": source_url,
                 "usage": [], "analysis_method": "local_labeled_text", "ai_used": False}
 
@@ -275,8 +308,9 @@ class LocalPipelineService(PipelineService):
         manual = clip.manual_metadata
         title = (manual.title if manual and manual.title else clip.title)[:100]
         description = manual.description if manual and manual.description else clip.transcript_excerpt
-        tags = list(dict.fromkeys((manual.hashtags if manual else []) + campaign.required_hashtags))
-        required = campaign.required_mentions + campaign.required_disclosures
+        from .campaign_requirements import ordered_hashtags, enforce_metadata
+        tags = ordered_hashtags(campaign.required_hashtags, manual.hashtags if manual else [])
+        required = campaign.required_mentions + campaign.required_disclosures + campaign.required_links
         text = description.strip()
         for value in required:
             if not re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", text, re.IGNORECASE):
@@ -287,6 +321,7 @@ class LocalPipelineService(PipelineService):
                    "hashtags": tags, "keywords": [], "opening_hook": clip.hook,
                    "call_to_action": "", "score": 0,
                    "reasoning": "User-supplied metadata formatted locally with required campaign text. Not AI generated, optimized, or scored."}
+        variant = enforce_metadata(variant, campaign)
         data = {platform: {"variants": [copy.deepcopy(variant) for _ in range(3)], "recommended_index": 0} for platform in PLATFORMS}
         try:
             return Metadata.model_validate(data).model_dump()

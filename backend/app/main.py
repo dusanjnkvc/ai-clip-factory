@@ -29,7 +29,8 @@ from .publishing import configured as youtube_configured, authorization_url, fin
 from .request_limits import RequestBodyLimitMiddleware
 from .usage import record_usage
 from .services.media import ConfigurationError, PipelineError
-from .runtime import free_mode, local_no_auth, create_pipeline_service
+from .runtime import free_mode, local_no_auth, create_pipeline_service, social_enabled
+import httpx
 
 
 @asynccontextmanager
@@ -54,6 +55,15 @@ async def provider_configuration_error(_, exc):
 @app.exception_handler(PipelineError)
 async def pipeline_error(_, exc):
     return JSONResponse(status_code=502, content={'detail':str(exc)[:1200]})
+
+@app.exception_handler(httpx.HTTPError)
+async def external_service_error(_, exc):
+    status=exc.response.status_code if isinstance(exc,httpx.HTTPStatusError) else None
+    detail=('The provider rejected authorization. Reconnect the account and check granted permissions.' if status in {401,403}
+        else 'The provider quota or rate limit was reached. Retry later.' if status==429
+        else 'The local model or optional platform service is unavailable. Check its status and retry.')
+    # Provider errors can contain signed upload URLs and tokens; never echo them.
+    return JSONResponse(status_code=503 if status==429 or status is None else 502,content={'detail':detail})
 
 def public_time(value):
     return value.isoformat() + 'Z' if value else None
@@ -129,6 +139,11 @@ class Login(BaseModel):
 @app.get('/api/health')
 def health():
     return {'status':'ok','version':'0.2.0','free_mode':free_mode(),'local_no_auth':local_no_auth(),'browser_mode':False}
+
+@app.get('/api/local-ai/status')
+def local_ai_status(user: User=Depends(current_user)):
+    from .services.ollama_provider import OllamaProvider
+    return OllamaProvider().status(require_vision=True)
 
 @app.post('/api/auth/register')
 def register(body: Registration, response: Response, request: Request, db: DBSession=Depends(get_db)):
@@ -256,15 +271,15 @@ def campaign_attachment(campaign_id: str,file: UploadFile=File(...),user: User=D
     if len(campaign.attachments) >= 10:
         raise HTTPException(422,'A campaign supports at most 10 attachments.')
     suffix = Path(file.filename or '').suffix.lower()
-    mimes = {'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg'}
+    mimes = {'.pdf':'application/pdf','.txt':'text/plain','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg'}
     if suffix not in mimes:
-        raise HTTPException(422,'Upload a PDF, PNG or JPEG.')
+        raise HTTPException(422,'Upload PDF, TXT, DOCX, PNG or JPEG.')
     with tempfile.TemporaryDirectory(prefix='acf-brief-') as temp:
         path = Path(temp)/('attachment'+suffix)
-        size = save_upload(file,path,20*1024*1024)
+        size = save_upload(file,path,15*1024*1024)
         with path.open('rb') as attached:
             magic = attached.read(8)
-        if not ((suffix=='.pdf' and magic.startswith(b'%PDF')) or (suffix=='.png' and magic.startswith(b'\x89PNG\r\n\x1a\n')) or (suffix in {'.jpg','.jpeg'} and magic.startswith(b'\xff\xd8\xff'))):
+        if not ((suffix=='.txt' and b'\x00' not in magic) or (suffix=='.docx' and magic.startswith(b'PK')) or (suffix=='.pdf' and magic.startswith(b'%PDF')) or (suffix=='.png' and magic.startswith(b'\x89PNG\r\n\x1a\n')) or (suffix in {'.jpg','.jpeg'} and magic.startswith(b'\xff\xd8\xff'))):
             raise HTTPException(422,'File content does not match its extension.')
         key = f'{user.id}/campaigns/{campaign.id}/{uid()}{suffix}'
         put_file(path,key)
@@ -412,15 +427,16 @@ def jobs(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
 @app.post('/api/jobs/{job_id}/retry')
 def retry_job(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     job = owned(db,ProcessingJob,job_id,user)
-    if job.status not in {'failed','blocked'} or job.attempts>=3:
-        raise HTTPException(409,'Only failed or blocked jobs with fewer than 3 attempts can resume.')
-    if free_mode() and not (job.payload.get('manual_selection') or job.payload.get('plan')):
+    if job.status not in {'failed','blocked','cancelled'} or job.attempts>=3:
+        raise HTTPException(409,'Only stopped jobs with fewer than 3 attempts can resume.')
+    if free_mode() and not (job.payload.get('manual_selection') or job.payload.get('plan') or job.payload.get('processing_provider')=='local_ai'):
         raise HTTPException(422,'This old AI job has no manual selection. Create a new free local render with start/end times.')
     if not free_mode():
         reserve_ai_budget(db,user,job.cost_reservation,job.id)
     job.status='queued'
     job.stage='Resuming persisted work'
     job.error=None
+    job.payload={**job.payload,'cancel_requested':False}
     audit(db,user.id,'job.retried',job.id)
     db.commit()
     return obj(job)
@@ -495,14 +511,25 @@ def update_metadata(clip_id: str,body: ClipMetadataUpdate,user: User=Depends(cur
     if len(json.dumps(body.metadata))>100000:
         raise HTTPException(422,'Metadata is too large.')
     from .services.schemas import Metadata
+    from .services.campaign_requirements import enforce_metadata
+    plan=db.get(EditingPlan,clip.editing_plan_id)
     try:
-        validated = Metadata.model_validate(body.metadata).model_dump()
+        supplied=Metadata.model_validate(body.metadata).model_dump()
+        validated = Metadata.model_validate({p:{**block,'variants':[enforce_metadata(v,plan.rules_snapshot) for v in block['variants']]} for p,block in supplied.items()}).model_dump()
     except ValueError:
         raise HTTPException(422,'Metadata must contain three complete validated variants for each platform.')
-    plan=db.get(EditingPlan,clip.editing_plan_id)
+    body.metadata=validated
     clip.metadata_json=validated
+    chosen=validated['youtube']
+    clip.title=chosen['variants'][chosen['recommended_index']]['title']
     clip.current_version+=1
     clip.draft_approved=False
+    previous_score=db.scalar(select(DraftEvaluation).where(DraftEvaluation.clip_id==clip.id,DraftEvaluation.version==clip.current_version-1).order_by(DraftEvaluation.created_at.desc()))
+    if previous_score and previous_score.evaluation.get('visual'):
+        from .services.viral_score import score_metadata
+        updated={**previous_score.evaluation,'platforms':score_metadata(previous_score.evaluation['visual'],validated),
+                 'recalculation':'Metadata changed; actual unchanged artifact samples reused. Research not refreshed.'}
+        db.add(DraftEvaluation(clip_id=clip.id,version=clip.current_version,artifact_sha256=previous_score.artifact_sha256,evaluation=updated))
     clip.compliance=pipeline().check_compliance(plan.plan,body.metadata,plan.rules_snapshot,rights_for(db,clip.source_id,user.id),clip.media_info,draft_approved=False)
     clip.status='ready' if clip.compliance['status']=='PASS' else 'review'
     db.add(ClipVersion(clip_id=clip.id,version=clip.current_version,plan=plan.plan,metadata_json=body.metadata,storage_key=clip.storage_key))
@@ -520,7 +547,8 @@ class ReviewUpdate(BaseModel):
 def review_clip(clip_id: str,body: ReviewUpdate,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     clip=owned(db,RenderedClip,clip_id,user)
     plan=db.get(EditingPlan,clip.editing_plan_id)
-    allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence'}
+    allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','creative_context','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions','on_video_text','resolution_requirements','logo_requirements','other_requirements'}
+    allowed.add('submission_deadline')
     evidence={}
     for rule,value in body.evidence.items():
         if rule not in allowed or not isinstance(value,dict) or value.get('confirmed') is not True or len(str(value.get('note','')).strip())<8:
@@ -603,6 +631,9 @@ def regenerate_clip(clip_id: str,body: RegenerateRequest,user: User=Depends(curr
         job.payload={**job.payload,'plan':original.plan}
     if not body.optimize_metadata:
         job.payload={**job.payload,'metadata':clip.metadata_json}
+    has_evaluation=bool(db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)))
+    if has_evaluation or clip.media_info.get('renderer')=='remotion':
+        job.payload={**job.payload,'processing_provider':'local_ai','options':{'studio':has_evaluation,'render_engine':'remotion' if clip.media_info.get('renderer')=='remotion' else 'ffmpeg'}}
     db.commit()
     return obj(job)
 
@@ -615,7 +646,8 @@ def youtube_connect(user: User=Depends(current_user),db: DBSession=Depends(get_d
     return {'url':authorization_url(db,user.id)}
 
 @app.get('/api/accounts/youtube/callback')
-def youtube_callback(state: str,code: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+def youtube_callback(state: str,code: str,request: Request,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    request.scope['query_string']=b''
     finish_oauth(db,user,state,code)
     return RedirectResponse(settings.frontend_url+'/?view=accounts&connected=youtube')
 
@@ -636,21 +668,34 @@ class PublishRequest(BaseModel):
     attended: bool = True
     privacy: Literal['public','private','unlisted'] = 'private'
     scheduled_at: datetime | None = None
+    made_for_kids: bool | None = None
+    version: int | None = None
 
 @app.post('/api/clips/{clip_id}/publish')
 def authorize_publish(clip_id: str,body: PublishRequest,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
-    if free_mode():
+    if not social_enabled():
         raise HTTPException(503,'Free local mode creates manual upload packages. Direct platform publishing is disabled.')
     clip=owned(db,RenderedClip,clip_id,user)
     account=owned(db,ConnectedAccount,body.account_id,user)
+    if body.version is not None and body.version!=clip.current_version:
+        raise HTTPException(409,'Draft version changed after the publishing preview. Review and approve the current version.')
     if not body.explicit_authorization:
         raise HTTPException(422,'Explicit approval is required for each publishing job.')
     if account.platform!='youtube' or account.status!='connected':
         raise HTTPException(422,'Use a connected YouTube account, or download the manual publishing package.')
     if clip.compliance.get('status')!='PASS':
         raise HTTPException(409,'Resolve all blocking compliance checks before publishing.')
+    from .social import require_approved_draft
+    require_approved_draft(db,clip)
+    if db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)) and body.made_for_kids is None:
+        raise HTTPException(422,'Select the required YouTube audience setting before publishing.')
+    if db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)) and body.version is None:
+        raise HTTPException(422,'Confirm the exact approved draft version before publishing.')
     campaign=db.get(Campaign,clip.campaign_id)
     plan=db.get(EditingPlan,clip.editing_plan_id)
+    from .services.campaign_requirements import deadline_state
+    if deadline_state(campaign.rules.get('submission_deadline'))=='expired':
+        raise HTTPException(409,'Campaign deadline has expired.')
     if campaign.rules!=plan.rules_snapshot:
         raise HTTPException(409,'Campaign rules changed after this clip was generated. Generate and review a clip against the current requirements.')
     if account.platform not in campaign.rules.get('allowed_platforms',[]):
@@ -666,7 +711,9 @@ def authorize_publish(clip_id: str,body: PublishRequest,user: User=Depends(curre
         schedule=schedule.astimezone(timezone.utc).replace(tzinfo=None)
         if schedule<=now():
             raise HTTPException(422,'Choose a future scheduled time.')
-    job=PublishingJob(user_id=user.id,clip_id=clip.id,account_id=account.id,platform='youtube',version=clip.current_version,authorized=True,attended=body.attended,privacy=body.privacy,scheduled_at=schedule,authorization_expires_at=now()+timedelta(minutes=5) if submission_minutes(campaign.rules) else None)
+    existing=db.scalar(select(PublishingJob).where(PublishingJob.clip_id==clip.id,PublishingJob.platform=='youtube',PublishingJob.version==clip.current_version))
+    if existing:return obj(existing,'upload_state')
+    job=PublishingJob(user_id=user.id,clip_id=clip.id,account_id=account.id,platform='youtube',version=clip.current_version,authorized=True,attended=body.attended,privacy=body.privacy,scheduled_at=schedule,upload_state={'made_for_kids':body.made_for_kids or False},authorization_expires_at=now()+timedelta(minutes=5) if submission_minutes(campaign.rules) else None)
     db.add(job)
     db.flush()
     audit(db,user.id,'publishing.authorized',job.id,privacy=body.privacy,clip_version=clip.current_version,scheduled_at=public_time(schedule))
@@ -748,7 +795,11 @@ def metrics(db,user):
         latest=db.scalar(select(AnalyticsSnapshot).where(AnalyticsSnapshot.post_id==post.id).order_by(AnalyticsSnapshot.created_at.desc()).limit(1))
         if latest:
             total_views+=latest.reported_views
-    return {'active_campaigns':count(Campaign,Campaign.status.in_(['active','review'])),'clips_generated':count(RenderedClip),'processing_jobs':count(ProcessingJob,ProcessingJob.status.in_(['queued','processing'])),
+    approved=db.scalar(select(func.count()).select_from(RenderedClip).where(RenderedClip.user_id==user.id,RenderedClip.status=='approved')) or 0
+    return {'projects':count(FactoryProject),'videos_imported':count(SourceVideo),
+        'videos_analyzed':db.scalar(select(func.count(func.distinct(ProcessingJob.source_id))).where(ProcessingJob.user_id==user.id,ProcessingJob.status=='completed')) or 0,
+        'approved_drafts':approved,'failed_jobs':count(ProcessingJob,ProcessingJob.status.in_(['failed','blocked'])),
+        'active_campaigns':count(Campaign,Campaign.status.in_(['active','review'])),'clips_generated':count(RenderedClip),'processing_jobs':count(ProcessingJob,ProcessingJob.status.in_(['queued','processing'])),
         'ready_to_publish':count(RenderedClip,RenderedClip.status=='ready'),'scheduled':count(PublishingJob,PublishingJob.status=='queued',PublishingJob.scheduled_at.is_not(None)),
         'published':count(PublishedPost),'pending_submissions':count(CampaignSubmission,CampaignSubmission.status.in_(['pending','submitted'])),'approved_submissions':count(CampaignSubmission,CampaignSubmission.status=='approved'),
         'rejected_submissions':count(CampaignSubmission,CampaignSubmission.status=='rejected'),'reported_views':total_views,'estimated_earnings':amount('estimated'),'confirmed_earnings':amount('confirmed'),'paid_earnings':amount('paid'),
@@ -757,7 +808,11 @@ def metrics(db,user):
 
 @app.get('/api/dashboard')
 def dashboard(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
-    return {'metrics':metrics(db,user),'recent_jobs':jobs(user,db)[:5],'campaigns':campaigns(user,db)[:5],'clips':clips(user,db)[:6],'configuration':configuration()}
+    from .performance import dashboard_data
+    end=datetime.now(timezone.utc).date();start=end-timedelta(days=29)
+    performance={p:dashboard_data(db,user,start,end,p) for p in ('youtube','tiktok')}
+    return {'metrics':metrics(db,user),'recent_jobs':jobs(user,db)[:5],'campaigns':campaigns(user,db)[:5],'clips':clips(user,db)[:6],'configuration':configuration(),
+        'platform_performance':{p:{'lifetime_views':v['lifetime_views'],'period_views':v['period_views'],'range':v['range'],'best_performing':v['best_performing']} for p,v in performance.items()}}
 
 @app.get('/api/analytics')
 def analytics(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
@@ -867,3 +922,97 @@ def update_settings(body: SettingsUpdate,user: User=Depends(current_user),db: DB
 @app.get('/api/audit')
 def audit_log(user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     return [obj(a) for a in db.scalars(select(AuditLog).where(AuditLog.user_id==user.id).order_by(AuditLog.created_at.desc()).limit(100))]
+
+
+class AutoCreate(BaseModel):
+    source_id: str
+    campaign_id: str | None = None
+    game: str = Field(default='',max_length=160)
+    context: str = Field(default='',max_length=4000)
+    duration: float = Field(default=20,ge=1,le=180)
+    intensity: Literal['gentle','balanced','energetic'] = 'balanced'
+    platform: Literal['youtube','tiktok','instagram'] = 'youtube'
+    original_creator_confirmed: bool = False
+    clip_count: int = Field(default=1,ge=1,le=10)
+    studio: bool = False
+    processing_mode: Literal['fast','balanced','quality'] = 'balanced'
+    editing_profile: Literal['opus','automatic','gaming','cinematic','clean','reference'] = 'automatic'
+    destination: Literal['both','youtube','tiktok'] = 'both'
+    render_engine: Literal['ffmpeg','remotion'] = 'ffmpeg'
+    framing: Literal['fit','crop'] = 'fit'
+    output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
+    reference_profile: dict | None = None
+
+@app.post('/api/auto/jobs')
+def auto_create(body: AutoCreate, request: Request, user: User=Depends(current_user), db: DBSession=Depends(get_db)):
+    if not free_mode() or not local_no_auth() or request.client.host not in {'127.0.0.1','::1','testclient'}:
+        raise HTTPException(403,'AUTO CREATE is restricted to the free loopback local application.')
+    source=owned(db,SourceVideo,body.source_id,user)
+    if db.scalar(select(ProcessingJob.id).where(ProcessingJob.source_id==source.id,ProcessingJob.status.in_(['queued','processing']))):
+        raise HTTPException(409,'This source already has an active render.')
+    from .services.ollama_provider import OllamaProvider
+    OllamaProvider().require_configured(require_vision=True)
+    if body.campaign_id:
+        campaign=owned(db,Campaign,body.campaign_id,user)
+        if not campaign.rules and campaign.brief.strip(): analyze_campaign_record(db,campaign)
+    else:
+        from .services.schemas import CampaignRules
+        destinations=['youtube','tiktok'] if body.studio and body.destination=='both' else [body.platform]
+        general=CampaignRules(campaign_name='General local creation',allowed_platforms=destinations,draft_approval_required=False,
+                              evidence=[{'field':'allowed_platforms','quote':body.platform,'source':'user_selected_platform'}]).model_dump()
+        campaign=Campaign(user_id=user.id,name='General local creation',brief='No external campaign supplied.',rules=general,evidence=general['evidence'],review_required=False,status='active')
+        db.add(campaign);db.flush()
+    rules=campaign.rules
+    if rules.get('automated_clipping_allowed') is False or rules.get('ai_generated_allowed') is False:
+        raise HTTPException(422,'Campaign prohibits automation; use the manual workflow.')
+    if rules.get('original_footage_required') and not body.original_creator_confirmed:
+        raise HTTPException(422,'Confirm required original creator footage before AUTO CREATE.')
+    if body.platform in rules.get('prohibited_platforms',[]):
+        raise HTTPException(422,'Campaign prohibits this platform.')
+    job=ProcessingJob(user_id=user.id,campaign_id=campaign.id,source_id=source.id,mode='quality' if body.processing_mode=='quality' else 'fast',clip_count=body.clip_count,
+        cost_reservation=0,rules_snapshot=rules,payload={'processing_provider':'local_ai','options':body.model_dump()})
+    db.add(job);db.commit();return obj(job)
+
+@app.post('/api/auto/jobs/{job_id}/cancel')
+def cancel_auto(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    job=owned(db,ProcessingJob,job_id,user)
+    if job.payload.get('processing_provider')!='local_ai': raise HTTPException(422,'Not an AUTO CREATE job.')
+    if job.status not in {'queued','processing'}: raise HTTPException(409,'Job is already finished.')
+    job.payload={**job.payload,'cancel_requested':True}
+    if job.status=='queued': job.status='cancelled'
+    db.commit();return obj(job)
+
+@app.get('/api/auto/jobs/{job_id}/result')
+def auto_result(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    job=owned(db,ProcessingJob,job_id,user)
+    if job.status!='completed': raise HTTPException(409,'The final video is not ready.')
+    clip=db.scalar(select(RenderedClip).where(RenderedClip.job_id==job.id,RenderedClip.user_id==user.id))
+    if not clip: raise HTTPException(409,'No final video is stored.')
+    result=job.payload.get('auto_result',{})
+    from .publishing import selected_metadata
+    return {'clip':clip_json(clip),'recommended':selected_metadata(clip.metadata_json,result.get('platform','youtube')), 'research':result.get('research',{}),
+            'ending_checks':result.get('ending_checks',[]),'platform':result.get('platform','youtube')}
+
+
+@app.get('/api/auto/jobs/{job_id}/package')
+def auto_package(job_id: str,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
+    result=auto_result(job_id,user,db)
+    clip=owned(db,RenderedClip,result['clip']['id'],user)
+    import io
+    from fastapi.responses import StreamingResponse
+    buffer=io.BytesIO()
+    with materialize(clip.storage_key) as path, zipfile.ZipFile(buffer,'w',compression=zipfile.ZIP_STORED) as archive:
+        archive.write(path,'clip.mp4')
+        archive.writestr('recommended-metadata.json',json.dumps(result['recommended'],ensure_ascii=False,indent=2))
+        archive.writestr('research.json',json.dumps(result['research'],ensure_ascii=False,indent=2))
+        archive.writestr('compliance.json',json.dumps(clip.compliance,ensure_ascii=False,indent=2))
+    buffer.seek(0)
+    return StreamingResponse(buffer,media_type='application/zip',headers={'Content-Disposition':'attachment; filename="auto-create-package.zip"'})
+
+
+from .studio import router as studio_router
+app.include_router(studio_router)
+from .social import router as social_router
+app.include_router(social_router)
+from .performance import router as performance_router
+app.include_router(performance_router)

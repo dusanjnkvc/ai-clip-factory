@@ -14,9 +14,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 
-from .schemas import ClipPlan, Transcript
+from .schemas import ClipPlan, Transcript,expanded_scenes,output_duration,OUTPUT_PRESETS
 
 
 class PipelineError(RuntimeError):
@@ -39,6 +40,27 @@ def ffmpeg_binary() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except (ImportError, RuntimeError) as exc:
         raise ConfigurationError("FFmpeg is unavailable. Install FFmpeg or set FFMPEG_BINARY.") from exc
+
+
+_encoder_cache={}
+
+
+def encoding_args(mode='fast'):
+    selected=os.getenv('LOCAL_AI_ENCODER','auto')
+    if selected not in {'auto','libx264','h264_nvenc'}:
+        raise ConfigurationError('LOCAL_AI_ENCODER must be auto, libx264 or h264_nvenc.')
+    binary=ffmpeg_binary()
+    if selected!='libx264' and binary not in _encoder_cache:
+        with tempfile.TemporaryDirectory(prefix='acf-encoder-') as directory:
+            try:
+                run_media([binary,'-v','error','-f','lavfi','-i','color=c=black:s=320x180:r=10','-t','.2',
+                    '-c:v','h264_nvenc','-pix_fmt','yuv420p',str(Path(directory)/'probe.mp4')],timeout=15)
+                _encoder_cache[binary]=True
+            except PipelineError:
+                _encoder_cache[binary]=False
+    if selected!='libx264' and _encoder_cache.get(binary):
+        return ['-c:v','h264_nvenc','-preset','p4','-cq','23' if mode=='fast' else '20','-b:v','0']
+    return ['-c:v','libx264','-preset','veryfast' if mode=='fast' else 'medium','-crf','22' if mode=='fast' else '19']
 
 
 def run_media(args: list[str], *, cwd: Path | None = None, timeout: int = 600) -> subprocess.CompletedProcess:
@@ -98,6 +120,11 @@ def probe_media(source_path: str | Path) -> dict:
             duration = float(info.get("format", {}).get("duration") or video.get("duration") or 0)
             audio = any(s.get("codec_type") == "audio" for s in streams)
             codec = video.get("codec_name")
+            rate=video.get('avg_frame_rate') or video.get('r_frame_rate') or '0/1'
+            try:fps=float(Fraction(rate))
+            except (ValueError,ZeroDivisionError):fps=None
+            audio_stream=next((s for s in streams if s.get('codec_type')=='audio'),{})
+            audio_codec=audio_stream.get('codec_name')
         except (KeyError, StopIteration, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise PipelineError("The file does not contain a valid timed video stream") from exc
     else:
@@ -119,9 +146,14 @@ def probe_media(source_path: str | Path) -> dict:
             width, height = height, width
         audio = bool(re.search(r"Stream[^\n]*Audio:", header))
         codec = video_match.group(1).split(" ")[0]
+        rate=re.search(r'(\d+(?:\.\d+)?) fps',header)
+        fps=float(rate[1]) if rate else None
+        audio_match=re.search(r'Audio:\s*([\w]+)',header)
+        audio_codec=audio_match[1] if audio_match else None
     if not math.isfinite(duration) or duration <= 0 or width < 16 or height < 16 or width > 16384 or height > 16384:
         raise PipelineError("Invalid video dimensions or duration")
-    return {"path": str(path), "duration": duration, "width": width, "height": height, "has_audio": audio, "codec": codec, "size_bytes": path.stat().st_size}
+    return {"path": str(path), "duration": duration, "width": width, "height": height, "has_audio": audio, "codec": codec, "size_bytes": path.stat().st_size,
+        'fps':fps if fps is not None and math.isfinite(fps) and fps>0 else None,'audio_codec':audio_codec}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -178,17 +210,19 @@ def timeline_words(plan: ClipPlan, transcript: Transcript) -> list[dict]:
     """Map source timestamps across reordered/cut scenes into output time."""
     words = []
     offset = 0.0
-    for scene in plan.scenes:
-        for word in transcript.words:
+    for scene in expanded_scenes(plan.scenes):
+        for word_index,word in enumerate(transcript.words):
             # Assign a boundary-spanning word to one scene. Intersection alone
             # would repeat it when adjacent scenes cut through the same word.
-            midpoint = (word.start + word.end) / 2
-            if scene.start <= midpoint < scene.end:
-                start = offset + max(word.start, scene.start) - scene.start
-                end = offset + min(word.end, scene.end) - scene.start
+            if word.end>scene.start and word.start<scene.end:
+                start = offset + (max(word.start, scene.start) - scene.start)/scene.speed
+                end = offset + (min(word.end, scene.end) - scene.start)/scene.speed
                 if end > start and word.word.strip():
-                    words.append({"word": word.word, "start": start, "end": end})
-        offset += scene.end - scene.start
+                    if words and words[-1].get('_source_word')==word_index and abs(words[-1]['end']-start)<.002:
+                        words[-1]['end']=end
+                    else:words.append({"word": word.word, "start": start, "end": end,'_source_word':word_index})
+        offset += output_duration(scene)
+    for word in words:word.pop('_source_word',None)
     return words
 
 
@@ -196,18 +230,18 @@ def timeline_cues(plan: ClipPlan, transcript: Transcript) -> list[dict]:
     """Map supplied phrase cue intervals without estimating any word timings."""
     cues = []
     offset = 0.0
-    for scene in plan.scenes:
+    for scene in expanded_scenes(plan.scenes):
         for cue in transcript.segments:
             intersection_start = max(cue.start, scene.start)
             intersection_end = min(cue.end, scene.end)
             if intersection_end > intersection_start and cue.text.strip():
-                start = offset + intersection_start - scene.start
-                end = offset + intersection_end - scene.start
+                start = offset + (intersection_start - scene.start)/scene.speed
+                end = offset + (intersection_end - scene.start)/scene.speed
                 if cues and cues[-1]["text"] == cue.text and abs(cues[-1]["end"] - start) < .001:
                     cues[-1]["end"] = end
                 else:
                     cues.append({"text": cue.text, "start": start, "end": end})
-        offset += scene.end - scene.start
+        offset += output_duration(scene)
     return cues
 
 
@@ -217,17 +251,24 @@ def write_subtitles(plan: ClipPlan, transcript: Transcript, output: Path) -> dic
     font_size = {"clean": 62, "bold": 74, "podcast": 66, "gaming": 58, "karaoke": 68}[style]
     outline = 3 if style == "clean" else 4
     bold = 0 if style == "clean" else -1
+    if plan.caption_size is not None:font_size=plan.caption_size
+    canvas_w,canvas_h=OUTPUT_PRESETS[plan.output_preset]
+    # ASS scales the established portrait typography proportionally to each canvas.
+    scale=min(canvas_w/1080,canvas_h/1920)
+    font_size=round(font_size*scale)
+    color='&H00'+plan.caption_color[5:7]+plan.caption_color[3:5]+plan.caption_color[1:3]
     header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {canvas_w}
+PlayResY: {canvas_h}
 WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},&H00FFFFFF,&H0057EAFF,&H00202020,&H90000000,{bold},0,0,0,100,100,0,0,1,{outline},1,2,100,100,350,1
-Style: Hook,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,4,1,8,100,100,240,1
+Style: Default,{plan.caption_font},{font_size},{color},&H0057EAFF,&H00202020,&H90000000,{bold},0,0,0,100,100,0,0,1,{outline},1,2,100,100,{round(plan.caption_margin*scale)},1
+Style: Hook,Arial,{round(72*scale)},&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,4,1,8,60,60,{round(240*scale)},1
+Style: Required,Arial,{round(44*scale)},&H00FFFFFF,&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,8,60,60,{round(460*scale)},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -235,6 +276,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
     words = timeline_words(plan, transcript) if plan.subtitles_enabled else []
     cues = timeline_cues(plan, transcript) if plan.subtitles_enabled and not words else []
+    if plan.manual_captions and plan.subtitles_enabled:
+        words=[];cues=[c.model_dump() for c in plan.manual_captions]
     # Small phrase groups retain context; \kf provides synchronized word fill.
     group = []
     groups = []
@@ -257,9 +300,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # SRT/VTT offers phrase times, not aligned words. Keep each supplied
         # phrase visible over its exact interval, including in karaoke style.
         events.append(f"Dialogue: 0,{_ass_time(cue['start'])},{_ass_time(cue['end'])},Default,,0,0,0,,{_ass_escape(cue['text'])}")
-    duration = sum(s.end - s.start for s in plan.scenes)
+    duration = sum(output_duration(s) for s in expanded_scenes(plan.scenes))
+    for overlay in plan.text_overlays:
+        events.append(f"Dialogue: 3,{_ass_time(overlay.start)},{_ass_time(overlay.end)},Default,,0,0,0,,{_ass_escape(overlay.text)}")
     if plan.show_hook and plan.hook:
         events.append(f"Dialogue: 1,0:00:00.00,{_ass_time(min(2.5, duration))},Hook,,0,0,0,,{_ass_escape(plan.hook)}")
+    if plan.required_on_video_text:
+        text=' · '.join(plan.required_on_video_text)
+        if len(text)>350:
+            raise PipelineError('Mandatory on-video text exceeds a readable overlay. Review campaign placement manually.')
+        events.append(f"Dialogue: 2,0:00:00.00,{_ass_time(duration)},Required,,0,0,0,,{_ass_escape(text)}")
     output.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     return {"words": len(words), "phrases": len(groups) + len(cues), "synchronized": bool(words or cues),
             "timing": "word" if words else "cue" if cues else "none", "path": str(output)}
@@ -273,6 +323,8 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
     if output == source:
         raise PipelineError("Rendering must never overwrite original source media")
     info = probe_media(source)
+    canvas_w,canvas_h=OUTPUT_PRESETS[plan.output_preset]
+    output_fps=plan.output_fps
     if any(scene.end > info["duration"] + .05 for scene in plan.scenes):
         raise PipelineError("Editing timeline exceeds the source video duration")
     if mode not in {"fast", "quality"}:
@@ -284,33 +336,85 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
         subtitle_info = write_subtitles(plan, transcript, work / "captions.ass")
         graph = []
         concat = []
-        for index, scene in enumerate(plan.scenes):
+        shots=expanded_scenes(plan.scenes)
+        for index, scene in enumerate(shots):
             width, height = info["width"], info["height"]
-            crop_w = min(width, height * 9 / 16) / scene.zoom
-            crop_h = crop_w * 16 / 9
+            base_zoom=min(scene.zoom,scene.zoom_end or scene.zoom)
+            crop_w = min(width, height * canvas_w / canvas_h) / base_zoom
+            crop_h = crop_w * canvas_h / canvas_w
             crop_w = max(2, int(crop_w) // 2 * 2)
             crop_h = max(2, min(height, int(crop_h) // 2 * 2))
             crop_x = max(0, min(width - crop_w, int((width - crop_w) * scene.crop_x)))
             crop_y = max(0, min(height - crop_h, int((height - crop_h) * scene.crop_y)))
-            graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},setpts=PTS-STARTPTS,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920:flags=bicubic,setsar=1,fps=30[v{index}]")
-            if info["has_audio"]:
-                graph.append(f"[0:a]atrim=start={scene.start:.4f}:end={scene.end:.4f},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}]")
+            duration = output_duration(scene)
+            x_end = scene.crop_x if scene.crop_x_end is None else scene.crop_x_end
+            y_end = scene.crop_y if scene.crop_y_end is None else scene.crop_y_end
+            x = f"'(in_w-out_w)*max(0,min(1,{scene.crop_x:.6f}+({x_end-scene.crop_x:.6f})*min(t/{duration:.6f},1)+{scene.shake:.6f}*sin(43*t)))'"
+            y = f"'(in_h-out_h)*max(0,min(1,{scene.crop_y:.6f}+({y_end-scene.crop_y:.6f})*min(t/{duration:.6f},1)+{scene.shake*.5:.6f}*cos(37*t)))'"
+            effects = []
+            intensity=scene.effect_intensity
+            if scene.effect == "contrast": effects.append(f"eq=contrast={1+.12*intensity:.4f}:saturation={1+.14*intensity:.4f}")
+            elif scene.effect == "retro": effects.extend([f"eq=contrast={1+.2*intensity:.4f}:saturation={1-.56*intensity:.4f}",f"noise=alls={4*intensity:.4f}:allf=t"])
+            elif scene.effect == 'flash':effects.append(f"eq=brightness='if(lt(t,0.07),{.18*intensity:.4f},0)':eval=frame")
+            if scene.zoom_end is not None and abs(scene.zoom_end-scene.zoom)>.001 and plan.framing=='crop':
+                count=max(1,duration*output_fps)
+                z=f'{scene.zoom/base_zoom:.6f}+{(scene.zoom_end-scene.zoom)/base_zoom:.6f}*min(on/{count:.4f},1)'
+                effects.append(f"zoompan=z='{z}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s={canvas_w}x{canvas_h}:fps={output_fps:.6f}")
+            if scene.transition == "fade" and duration > .5:
+                fade = min(.14, duration/5)
+                effects.extend([f"fade=t=in:st=0:d={fade:.4f}", f"fade=t=out:st={duration-fade:.4f}:d={fade:.4f}"])
+            polish = "," + ",".join(effects) if effects else ""
+            clock=f'setpts=(PTS-STARTPTS)/{scene.speed:.6f}'
+            if scene.freeze:polish+=f',tpad=stop_mode=clone:stop_duration={scene.freeze:.4f}'
+            if plan.framing=='fit':
+                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},{clock},split=2[fg{index}][bg{index}]")
+                graph.append(f"[bg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},gblur=sigma=24,eq=brightness=-0.06[blur{index}]")
+                graph.append(f"[fg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease[fit{index}]")
+                graph.append(f"[blur{index}][fit{index}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps={output_fps:.6f}{polish}[v{index}]")
             else:
-                graph.append(f"anullsrc=r=48000:cl=stereo:d={scene.end-scene.start:.4f}[a{index}]")
+                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},{clock},crop={crop_w}:{crop_h}:{x}:{y},scale={canvas_w}:{canvas_h}:flags=bicubic,setsar=1,fps={output_fps:.6f}{polish}[v{index}]")
+            if info["has_audio"] and plan.audio_treatment != "mute":
+                padding=f',apad=pad_dur={scene.freeze:.4f}' if scene.freeze else ''
+                graph.append(f"[0:a]atrim=start={scene.start:.4f}:end={scene.end:.4f},asetpts=PTS-STARTPTS,atempo={scene.speed:.6f},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo{padding},atrim=duration={duration:.6f}[a{index}]")
+            else:
+                graph.append(f"anullsrc=r=48000:cl=stereo:d={duration:.4f}[a{index}]")
             concat.extend([f"[v{index}]", f"[a{index}]"])
-        graph.append("".join(concat) + f"concat=n={len(plan.scenes)}:v=1:a=1[video][audio]")
+        graph.append("".join(concat) + f"concat=n={len(shots)}:v=1:a=1[video][audio]")
         graph.append("[video]ass=filename=captions.ass[outv]")
-        graph.append("[audio]loudnorm=I=-16:TP=-1.5:LRA=11[outa]")
+        treatment=("loudnorm=I=-16:TP=-1.5:LRA=11" if info["has_audio"] and plan.audio_treatment != "mute" else "anull")
+        if plan.audio_denoise: treatment+=',afftdn=nf=-25'
+        treatment+=f',volume={plan.audio_volume:.4f},alimiter=limit=0.95'
+        args_inputs=[]
+        mix=['[audio]']
+        if plan.sound_cues:
+            from .sound_cues import write_cue
+            for i,cue in enumerate(plan.sound_cues):
+                cue_path=work/f'cue-{i}.wav';write_cue(cue.kind,cue_path)
+                args_inputs.extend(['-i',str(cue_path)])
+                delay=round(cue.start*1000)
+                graph.append(f'[{i+1}:a]volume={cue.volume:.4f},adelay={delay}|{delay}[cue{i}]')
+                mix.append(f'[cue{i}]')
+            graph.append(''.join(mix)+f'amix=inputs={len(mix)}:duration=first:normalize=0[mixed]')
+        graph.append(('[mixed]' if plan.sound_cues else '[audio]')+treatment+'[outa]')
         temporary_video = work / "render.mp4"
-        args = [ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y", *safe_input_options(source), "-i", str(source), "-filter_complex_threads", "2", "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]", "-c:v", "libx264", "-preset", "veryfast" if mode == "fast" else "medium", "-crf", "22" if mode == "fast" else "19", "-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", str(temporary_video)]
-        run_media(args, cwd=work, timeout=max(600, int(sum(s.end-s.start for s in plan.scenes) * 30)))
+        encoder=encoding_args(mode)
+        prefix=[ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-y", *safe_input_options(source), "-i", str(source),*args_inputs, "-filter_complex_threads", "2", "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]"]
+        suffix=["-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-movflags", "+faststart", str(temporary_video)]
+        timeout=max(600,int(sum(output_duration(s) for s in shots)*30))
+        try:
+            run_media(prefix+encoder+suffix,cwd=work,timeout=timeout)
+        except PipelineError:
+            if 'h264_nvenc' not in encoder:raise
+            encoder=['-c:v','libx264','-preset','veryfast','-crf','22']
+            run_media(prefix+encoder+suffix,cwd=work,timeout=timeout)
         rendered = probe_media(temporary_video)
-        expected_duration = sum(s.end - s.start for s in plan.scenes)
-        if rendered["width"] != 1080 or rendered["height"] != 1920 or abs(rendered["duration"] - expected_duration) > .3 or not rendered["has_audio"]:
+        expected_duration = sum(output_duration(s) for s in shots)
+        if rendered["width"] != canvas_w or rendered["height"] != canvas_h or abs(rendered["duration"] - expected_duration) > .3 or not rendered["has_audio"]:
             raise PipelineError("Rendered video failed dimension, duration, or audio validation")
         # A complete decode catches truncated/invalid files before exposing them.
         run_media([ffmpeg_binary(), "-v", "error", *safe_input_options(temporary_video), "-i", str(temporary_video), "-f", "null", "-"], timeout=max(120, int(expected_duration * 5)))
         shutil.copyfile(work / "captions.ass", captions_output)
         os.replace(temporary_video, output)
-    rendered.update({"path": str(output), "subtitles_path": str(captions_output), "subtitle_words": subtitle_info["words"], "subtitle_synchronized": subtitle_info["synchronized"], "subtitle_timing": subtitle_info["timing"], "subtitle_phrases": subtitle_info["phrases"], "source_had_audio": info["has_audio"], "sha256": sha256_file(output), "decode_verified": True})
+    rendered['source_aspect_ratio']=info['width']/info['height']
+    rendered.update({"path": str(output), "subtitles_path": str(captions_output), "subtitle_words": subtitle_info["words"], "subtitle_synchronized": subtitle_info["synchronized"], "subtitle_timing": subtitle_info["timing"], "subtitle_phrases": subtitle_info["phrases"], "source_had_audio": info["has_audio"], "sha256": sha256_file(output), "decode_verified": True,'encoder':encoder[1]})
     return rendered

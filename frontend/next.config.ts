@@ -14,6 +14,6 @@ const nextConfig: NextConfig = {
     { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
     { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
   ] }]; },
-  experimental: { proxyClientMaxBodySize: "510mb", proxyTimeout: 300000 },
+  experimental: { proxyClientMaxBodySize: process.env.LOCAL_AI_PROXY_SIZE === "1600mb" ? "1600mb" : "510mb", proxyTimeout: 300000 },
 };
 export default nextConfig;

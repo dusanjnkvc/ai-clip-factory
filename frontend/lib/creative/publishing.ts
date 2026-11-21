@@ -15,7 +15,9 @@ export function publishingSuggestions(concept:CreativeConcept,rules:Row,platform
   const required=[...(rules.required_mentions||[]),...(rules.required_disclosures||[]),...(rules.required_links||[])];
   for(const value of rules.required_links||[])if(!isHttps(value))throw new Error("Required publishing links must use HTTPS without credentials.");
   for(const value of required)if(!description.toLocaleLowerCase().includes(String(value).toLocaleLowerCase()))description=(description+"\n\n"+value).trim();
-  const hashtags=[...new Set([...(concept.hashtags||[]),...(rules.required_hashtags||[])])];
+  const hashtags=[...new Set([...(rules.required_hashtags||[]),...(concept.hashtags||[])])];
+  const prefix=[...(rules.required_hashtags||[]),...(rules.required_mentions||[])].join(' ');
+  if(prefix&&!description.startsWith(prefix))description=prefix+'\n\n'+description;
   if(hashtags.length>30)throw new Error("Use at most 30 relevant campaign/topic hashtags.");
   if(description.length>2200)throw new Error("Shorten the description while preserving required campaign text.");
   const cover=concept.shots[0]?(concept.shots[0].start+Math.min(3,concept.shots[0].end-concept.shots[0].start)/2):0;

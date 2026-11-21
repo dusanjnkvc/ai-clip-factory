@@ -10,7 +10,7 @@ type Props = { campaignOnly: boolean; campaigns: Row[]; sources: Row[]; onDone: 
 export default function LocalCreateFlow({ campaignOnly, campaigns, sources, onDone }: Props) {
   const [mode, setMode] = useState("fast");
   const [campaignId, setCampaignId] = useState("");
-  const [general, setGeneral] = useState(false);
+  const [general, setGeneral] = useState(!campaignOnly);
   const [sourceId, setSourceId] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
@@ -43,7 +43,7 @@ export default function LocalCreateFlow({ campaignOnly, campaigns, sources, onDo
       if (!cid) {
         setStage("Saving your campaign brief…");
         const campaign = await api("/campaigns", { method: "POST", body: JSON.stringify({
-          name: form.get("name") || "General clipping",
+          name: form.get("name") || attachment?.name.replace(/\.[^.]+$/, "") || "General clipping",
           brief: form.get("brief") || "General authorized video clipping. No external campaign requirements supplied.",
           url: form.get("url") || null,
         }) });
@@ -54,6 +54,7 @@ export default function LocalCreateFlow({ campaignOnly, campaigns, sources, onDo
           const upload = new FormData();
           upload.append("file", attachment);
           await api("/campaigns/" + cid + "/attachments", { method: "POST", body: upload });
+          await api("/campaigns/"+cid+"/analyze",{method:"POST"});
         }
       }
       if (campaignOnly) {
@@ -99,7 +100,8 @@ export default function LocalCreateFlow({ campaignOnly, campaigns, sources, onDo
           crop_y: Number(form.get("crop_y") ?? 0.5),
           zoom: Number(form.get("zoom") || 1),
           subtitle_style: String(form.get("subtitle_style") || "clean"),
-          hook: "", show_hook: false,
+          hook: String(form.get("hook")||""), show_hook: !!String(form.get("hook")||"").trim(),
+          render_engine: String(form.get("render_engine")||"remotion"),
         },
       }) });
       onDone("Local render queued. Your computer will create the MP4; review its captions, crop, and compliance when ready.");
@@ -108,15 +110,15 @@ export default function LocalCreateFlow({ campaignOnly, campaigns, sources, onDo
   }
 
   return <form onSubmit={submit} className="form-body create-form">
-    <div className="notice local-mode-notice"><ShieldCheck size={18}/><span><strong>Free local mode · no paid API calls</strong><br/>You choose the moment and metadata. FFmpeg renders it on your computer. Automatic transcription and AI moment selection are unavailable.</span></div>
+    <div className="notice local-mode-notice"><ShieldCheck size={18}/><span><strong>Free browser editing · no paid API calls</strong><br/>You choose the moment and metadata. Remotion edits the video in your browser. No paid rendering service is used. Automatic transcription and AI moment selection are unavailable.</span></div>
     {!campaignOnly && <div className="segmented"><button type="button" className={!general ? "selected" : ""} onClick={() => setGeneral(false)}><FileCheck2 size={15}/>Content Rewards</button><button type="button" className={general ? "selected" : ""} onClick={() => { setGeneral(true); setCampaignId(""); }}><Scissors size={15}/>General clipping</button></div>}
     <div className="form-section-title"><span>01</span>{general ? "Your project" : "Campaign brief"}<small>Keep the source of every rule</small></div>
-    {!campaignOnly && campaigns.length > 0 && !general && <label>Campaign<select value={campaignId} onChange={event => setCampaignId(event.target.value)}><option value="">Create a new campaign</option>{campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select></label>}
+    {!campaignOnly && campaigns.length > 0 && <label>Campaign<select value={campaignId} onChange={event => setCampaignId(event.target.value)}><option value="">Create a new campaign</option>{campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select></label>}
     {!campaignId && <>
-      <label>{general ? "Project name" : "Campaign name"}<input name="name" placeholder={general ? "Interview highlights" : "Give your campaign a name"} required maxLength={200}/></label>
+      <label>{general ? "Project name" : "Campaign name"}<input name="name" placeholder={general ? "Optional project name" : "Optional campaign name"} maxLength={200}/></label>
       {!general && <label>Campaign URL <span className="optional">optional · reference only</span><input type="url" name="url" placeholder="https://…"/><small>Paste the requirements below. Private campaign pages are never scraped.</small></label>}
-      <label>{general ? "Project notes" : "Campaign requirements"}<textarea name="brief" rows={5} required={!general} placeholder={general ? "Describe your project and any requirements you want to keep…" : "Paste the full brief, including platforms, duration, required hashtags, disclosures, and submission instructions…"}/></label>
-      {!general && <label className="attachment-input"><FileText size={17}/><span>{attachment?.name || "Add a PDF or campaign screenshot"}<small>Saved as evidence. Images need manual reading; no cloud OCR is used.</small></span><input type="file" accept="application/pdf,image/png,image/jpeg" onChange={event => setAttachment(event.target.files?.[0] || null)}/><Plus size={17}/></label>}
+      <label>Clip rules · paste text here<textarea name="brief" rows={5} required={!general&&!attachment} placeholder={general ? "Required hashtags: #Campaign #Gaming\nRequired mentions: @creator\nRequired on-screen text: Your exact wording" : "Paste the full brief, including platforms, duration, required hashtags, disclosures, and submission instructions…"}/></label>
+      {<label className="attachment-input"><FileText size={17}/><span>{attachment?.name || "Upload rules PDF or TXT"}<small>PDF text is read in your browser. Required #hashtags and @mentions come first; mandatory on-screen wording is rendered into the video.</small></span><input type="file" accept="application/pdf,text/plain,.txt" onChange={event => setAttachment(event.target.files?.[0] || null)}/><Plus size={17}/></label>}
     </>}
     {!campaignOnly && <>
       <div className="form-section-title"><span>02</span>Authorized source video<small>Your original is preserved</small></div>
@@ -140,12 +142,13 @@ export default function LocalCreateFlow({ campaignOnly, campaigns, sources, onDo
       <div className="generation-settings"><label>Horizontal crop (0–1)<input name="crop_x" type="number" min="0" max="1" step="0.05" defaultValue="0.5" required/><small>0 = left, 0.5 = center, 1 = right</small></label><label>Vertical crop (0–1)<input name="crop_y" type="number" min="0" max="1" step="0.05" defaultValue="0.5" required/><small>0 = top, 0.5 = center, 1 = bottom</small></label></div>
       <div className="generation-settings"><label>Zoom<input name="zoom" type="number" min="1" max="1.5" step="0.05" defaultValue="1" required/></label><label>Subtitle style<select name="subtitle_style"><option value="clean">Clean</option><option value="bold">Bold</option><option value="podcast">Podcast</option><option value="gaming">Gaming</option></select></label></div>
       <div className="info-line"><FileText size={15}/>Subtitles use your uploaded cue times. Without a caption file, the clip has no speech captions.</div>
+      <label>On-video headline<input name="hook" maxLength={140}/></label><label>Video editor<select name="render_engine"><option value="remotion">Remotion · browser rendering</option><option value="ffmpeg">FFmpeg · compatibility mode</option></select></label>
       <label>Encoding mode<select value={mode} onChange={event => setMode(event.target.value)}><option value="fast">FAST — quicker CPU encoding</option><option value="quality">QUALITY — slower CPU encoding</option></select></label>
       <div className="info-line"><ShieldCheck size={15}/>Every render is checked. Semantic campaign requirements still need your review.</div>
     </>}
     {error && <div className="form-error" role="alert">{error}</div>}
     {stage && <div className="info-line"><LoaderCircle size={15} className="spin"/>{stage}</div>}
-    <button className="button primary full" disabled={busy}>{busy ? <LoaderCircle size={17} className="spin"/> : campaignOnly ? <FileCheck2 size={17}/> : <Scissors size={17}/>} {busy ? "Working…" : campaignOnly ? "Save campaign" : "Render clip locally"}<ArrowRight size={16}/></button>
+    <button className="button primary full" disabled={busy}>{busy ? <LoaderCircle size={17} className="spin"/> : campaignOnly ? <FileCheck2 size={17}/> : <Scissors size={17}/>} {busy ? "Working…" : campaignOnly ? "Save campaign" : "Generate clip"}<ArrowRight size={16}/></button>
     <p className="form-footnote">Nothing is published automatically. Review the actual clip and campaign requirements first.</p>
   </form>;
 }

@@ -3,7 +3,9 @@ import base64
 import hashlib
 import json
 import os
+from .services.social_settings import value as social_setting
 import secrets
+import time
 from datetime import timedelta
 from urllib.parse import urlencode, urlparse
 import httpx
@@ -16,15 +18,15 @@ from .models import (OAuthState, ConnectedAccount, PublishingJob, RenderedClip, 
 from .security import token_hash
 from .storage import materialize
 from .submissions import create_submission, submission_minutes
-from .runtime import free_mode
+from .runtime import free_mode,social_enabled
 
-SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly']
+SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly','https://www.googleapis.com/auth/yt-analytics.readonly']
 
 def configured():
-    return not free_mode() and all(os.getenv(key) for key in ('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'))
+    return social_enabled() and all(social_setting(key) for key in ('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'))
 
 def cipher():
-    key = os.getenv('TOKEN_ENCRYPTION_KEY')
+    key = social_setting('TOKEN_ENCRYPTION_KEY')
     if not key:
         raise HTTPException(503, 'Set TOKEN_ENCRYPTION_KEY before connecting an account.')
     try:
@@ -33,7 +35,7 @@ def cipher():
         raise HTTPException(503, 'TOKEN_ENCRYPTION_KEY must be a valid Fernet key.')
 
 def authorization_url(db, user_id):
-    if free_mode():
+    if not social_enabled():
         raise HTTPException(503,'Free local mode uses manual upload packages. No external publishing connection is required.')
     if not configured():
         raise HTTPException(503, 'Configure the YouTube OAuth client, redirect URI and token encryption key first.')
@@ -43,10 +45,10 @@ def authorization_url(db, user_id):
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
     db.add(OAuthState(user_id=user_id, state_hash=token_hash(state), verifier=verifier, expires_at=now()+timedelta(minutes=10)))
     db.commit()
-    return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'redirect_uri':os.environ['YOUTUBE_REDIRECT_URI'], 'response_type':'code', 'scope':' '.join(SCOPES), 'state':state, 'access_type':'offline', 'prompt':'consent', 'code_challenge':challenge, 'code_challenge_method':'S256'})
+    return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({'client_id':social_setting('YOUTUBE_CLIENT_ID'), 'redirect_uri':social_setting('YOUTUBE_REDIRECT_URI'), 'response_type':'code', 'scope':' '.join(SCOPES), 'state':state, 'access_type':'offline', 'prompt':'consent', 'code_challenge':challenge, 'code_challenge_method':'S256'})
 
 def finish_oauth(db, user, state, code):
-    if free_mode():
+    if not social_enabled():
         raise HTTPException(503,'External account connections are disabled in free local mode.')
     row = db.scalar(select(OAuthState).where(OAuthState.user_id == user.id, OAuthState.state_hash == token_hash(state), OAuthState.expires_at > now()))
     if not row:
@@ -55,12 +57,12 @@ def finish_oauth(db, user, state, code):
     db.delete(row)
     db.commit()
     with httpx.Client(timeout=60) as client:
-        response = client.post('https://oauth2.googleapis.com/token', data={'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'], 'redirect_uri':os.environ['YOUTUBE_REDIRECT_URI'], 'grant_type':'authorization_code', 'code':code, 'code_verifier':verifier})
+        response = client.post('https://oauth2.googleapis.com/token', data={'client_id':social_setting('YOUTUBE_CLIENT_ID'), 'client_secret':social_setting('YOUTUBE_CLIENT_SECRET'), 'redirect_uri':social_setting('YOUTUBE_REDIRECT_URI'), 'grant_type':'authorization_code', 'code':code, 'code_verifier':verifier})
         if response.status_code != 200:
             raise HTTPException(400, 'YouTube authorization failed. Reconnect the account.')
         credentials = response.json()
         granted = credentials.get('scope','').split()
-        if not set(SCOPES).issubset(granted):
+        if not set(SCOPES[:2]).issubset(granted):
             raise HTTPException(400, 'YouTube upload and channel permissions are required.')
         channels = client.get('https://www.googleapis.com/youtube/v3/channels', params={'part':'snippet','mine':'true'}, headers={'Authorization':f"Bearer {credentials['access_token']}"})
         if channels.status_code != 200 or not channels.json().get('items'):
@@ -80,14 +82,16 @@ def finish_oauth(db, user, state, code):
     return account
 
 def access_token(db, account):
-    if free_mode():
+    if not social_enabled():
         raise ValueError('External publishing is disabled in free local mode. Use the manual upload package.')
     credentials = json.loads(cipher().decrypt(account.encrypted_credentials.encode()))
     refresh = credentials.get('refresh_token')
     if not refresh:
         raise ValueError('Reconnect YouTube to grant offline access.')
-    response = httpx.post('https://oauth2.googleapis.com/token', data={'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'], 'grant_type':'refresh_token','refresh_token':refresh}, timeout=60)
+    response = httpx.post('https://oauth2.googleapis.com/token', data={'client_id':social_setting('YOUTUBE_CLIENT_ID'), 'client_secret':social_setting('YOUTUBE_CLIENT_SECRET'), 'grant_type':'refresh_token','refresh_token':refresh}, timeout=60)
     if response.status_code != 200:
+        if response.status_code in {400,401}:
+            account.status='reauthorization_required';db.commit()
         raise ValueError('YouTube token refresh failed. Reconnect the account.')
     updated = response.json()
     updated['refresh_token'] = refresh
@@ -111,10 +115,12 @@ def selected_metadata(metadata, platform):
     return data
 
 def publish_youtube(db, job):
-    if free_mode():
+    if not social_enabled():
         raise ValueError('External publishing is disabled in free local mode. Use the manual upload package.')
     clip = db.get(RenderedClip, job.clip_id)
     campaign = db.get(Campaign, clip.campaign_id)
+    from .services.campaign_requirements import deadline_state
+    if deadline_state(campaign.rules.get('submission_deadline'))=='expired':raise ValueError('Campaign deadline expired before publication.')
     account = db.get(ConnectedAccount, job.account_id)
     plan = db.get(EditingPlan,clip.editing_plan_id)
     if not job.authorized or not account or account.user_id != job.user_id:
@@ -123,7 +129,9 @@ def publish_youtube(db, job):
         raise ValueError('Clip changed after approval. Review and authorize the new version.')
     if clip.compliance.get('status') != 'PASS':
         raise ValueError('Compliance review must pass before publishing.')
-    if campaign.rules!=plan.rules_snapshot or 'youtube' not in campaign.rules.get('allowed_platforms',[]):
+    from .social import require_approved_draft
+    require_approved_draft(db,clip)
+    if campaign.rules!=plan.rules_snapshot or 'youtube' not in campaign.rules.get('allowed_platforms',[]) or 'youtube' in campaign.rules.get('prohibited_platforms',[]):
         raise ValueError('Campaign rules changed or YouTube is not a permitted platform. Generate and review against current requirements.')
     if (campaign.rules.get('draft_approval_required') or campaign.rules.get('approval_required')) and not clip.draft_approved:
         raise ValueError('Campaign draft approval is required.')
@@ -142,16 +150,15 @@ def publish_youtube(db, job):
         session_url = state.get('session_url')
         if not session_url:
             title = str(meta.get('title') or clip.title)[:100]
-            description = str(meta.get('description') or meta.get('caption') or '')
-            hashtags = meta.get('hashtags', [])
-            if hashtags:
-                description += '\n\n' + ' '.join(hashtags)
-            response = client.post('https://www.googleapis.com/upload/youtube/v3/videos', params={'part':'snippet,status','uploadType':'resumable'}, headers={'Authorization':f'Bearer {token}','X-Upload-Content-Type':'video/mp4','X-Upload-Content-Length':str(path.stat().st_size)}, json={'snippet':{'title':title,'description':description[:5000],'categoryId':'22'},'status':{'privacyStatus':job.privacy}})
+            from .services.publication_text import publication_text
+            description=publication_text(meta,'youtube')
+            if len(description)>5000: raise ValueError('Publication description exceeds YouTube limits; review mandatory text.')
+            response = client.post('https://www.googleapis.com/upload/youtube/v3/videos', params={'part':'snippet,status','uploadType':'resumable'}, headers={'Authorization':f'Bearer {token}','X-Upload-Content-Type':'video/mp4','X-Upload-Content-Length':str(path.stat().st_size)}, json={'snippet':{'title':title,'description':description,'categoryId':'20' if plan.plan.get('content_type')=='gaming' else '22'},'status':{'privacyStatus':job.privacy,'selfDeclaredMadeForKids':bool(state.get('made_for_kids'))}})
             response.raise_for_status()
             session_url = response.headers.get('location')
             if not session_url or urlparse(session_url).scheme != 'https' or not (urlparse(session_url).hostname or '').endswith('.googleapis.com'):
                 raise ValueError('YouTube did not return a valid resumable upload URL.')
-            job.upload_state = {'session_url':session_url,'total':path.stat().st_size}
+            job.upload_state = {**state,'session_url':session_url,'total':path.stat().st_size}
             db.commit()
         total = path.stat().st_size
         # Query the session first: retries resume bytes rather than creating a
@@ -217,20 +224,28 @@ def publish_youtube(db, job):
 
 def run_publish_once():
     with SessionLocal() as db:
-        job = db.scalar(select(PublishingJob).where(PublishingJob.status == 'queued',or_(PublishingJob.scheduled_at.is_(None),PublishingJob.scheduled_at <= now())).order_by(PublishingJob.created_at).limit(1))
+        pending=list(db.scalars(select(PublishingJob).where(PublishingJob.status.in_(['queued','awaiting_publication']),or_(PublishingJob.scheduled_at.is_(None),PublishingJob.scheduled_at <= now())).order_by(PublishingJob.created_at).limit(25)))
+        job=next((j for j in pending if j.status=='queued' or j.upload_state.get('next_poll_at',0)<=time.time()),None)
         if not job:
             return False
-        result = db.execute(update(PublishingJob).where(PublishingJob.id == job.id,PublishingJob.status == 'queued').values(status='uploading',attempts=PublishingJob.attempts+1,upload_started_at=now(),upload_lease_until=now()+timedelta(minutes=30)))
+        polling=job.status=='awaiting_publication'
+        result = db.execute(update(PublishingJob).where(PublishingJob.id == job.id,PublishingJob.status == job.status).values(status='uploading',attempts=PublishingJob.attempts+int(not polling),upload_started_at=now(),upload_lease_until=now()+timedelta(minutes=30)))
         db.commit()
         if not result.rowcount:
             return False
         db.refresh(job)
         try:
-            publish_youtube(db,job)
+            if job.platform=='tiktok':
+                from .social import publish_tiktok
+                publish_tiktok(db,job)
+            else:
+                publish_youtube(db,job)
+            if job.status=='awaiting_publication':
+                job.upload_state={**job.upload_state,'next_poll_at':time.time()+30};db.commit()
         except Exception as exc:
             job.status = 'failed'
             # Provider errors can contain request headers/URLs: store only a
             # stable exception category for http failures, never credential data.
-            job.error = f'YouTube request failed ({exc.response.status_code}). Review and retry the existing upload.' if isinstance(exc,httpx.HTTPStatusError) else str(exc)[:800]
+            job.error = f'Platform request failed ({exc.response.status_code}). Review and retry the existing upload.' if isinstance(exc,httpx.HTTPStatusError) else 'Platform network request failed; retry only the existing upload.' if isinstance(exc,httpx.HTTPError) else str(exc)[:800]
             db.commit()
         return True

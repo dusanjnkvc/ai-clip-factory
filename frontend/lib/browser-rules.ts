@@ -9,17 +9,18 @@ function containsRequiredToken(text: string, value: string): boolean {
 }
 
 export function emptyRules(): BrowserRow {
-  return { campaign_name: "Untitled campaign", campaign_type: "unknown", allowed_platforms: [], min_duration: null, max_duration: null, required_hashtags: [], required_mentions: [], required_disclosures: [], required_branding: [], required_links: [], permitted_source_material: [], prohibited_content: [], prohibited_footage: [], audience_restrictions: [], audio_restrictions: [], automated_clipping_allowed:null, ai_generated_allowed:null, music_allowed:null, ai_voice_allowed:null, original_footage_required:null, paid_promotion_allowed:null, minimum_views: null, reward_per_1000: null, flat_fee: null, maximum_payout: null, currency: null, draft_approval_required: null, submission_deadline: null, submission_window_minutes: null, submission_instructions: null, submission_url: null, evidence: [], uncertainties: [], contradictions: [] };
+  return { campaign_name: "Untitled campaign", campaign_type: "unknown", allowed_platforms: [], min_duration: null, max_duration: null, required_hashtags: [], required_mentions: [], required_on_video_text: [], required_description_phrases: [], required_disclosures: [], required_branding: [], required_links: [], permitted_source_material: [], prohibited_content: [], prohibited_footage: [], audience_restrictions: [], audio_restrictions: [], automated_clipping_allowed:null, ai_generated_allowed:null, music_allowed:null, ai_voice_allowed:null, original_footage_required:null, paid_promotion_allowed:null, minimum_views: null, reward_per_1000: null, flat_fee: null, maximum_payout: null, currency: null, draft_approval_required: null, submission_deadline: null, submission_window_minutes: null, submission_instructions: null, submission_url: null, evidence: [], uncertainties: [], contradictions: [] };
 }
 
 export function validateRules(supplied: BrowserRow): BrowserRow {
   if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) throw new Error("Campaign rules must be an object.");
   const rules = { ...emptyRules(), ...structuredClone(supplied) };
-  for (const field of ["allowed_platforms", "required_hashtags", "required_mentions", "required_disclosures", "required_branding", "required_links", "prohibited_footage", "audience_restrictions", "permitted_source_material", "prohibited_content", "audio_restrictions", "uncertainties", "contradictions", "evidence"]) {
+  for (const field of ["allowed_platforms", "required_hashtags", "required_mentions", "required_on_video_text", "required_description_phrases", "required_disclosures", "required_branding", "required_links", "prohibited_footage", "audience_restrictions", "permitted_source_material", "prohibited_content", "audio_restrictions", "uncertainties", "contradictions", "evidence"]) {
     if (!Array.isArray(rules[field])) throw new Error(`${field} must be a list.`);
     if (field !== "evidence" && rules[field].some((value: unknown) => typeof value !== "string")) throw new Error(`${field} must contain text values.`);
   }
   if (rules.allowed_platforms.some((platform: string) => !PLATFORMS.includes(platform))) throw new Error("Use youtube, tiktok, or instagram as permitted platforms.");
+  if(rules.required_on_video_text.length>6||rules.required_on_video_text.join(' ').length>350)throw new Error('Mandatory on-screen wording exceeds the readable video overlay limit. Review its placement before generating.');
   for (const field of ["min_duration", "max_duration", "minimum_views", "reward_per_1000", "flat_fee", "maximum_payout", "submission_window_minutes"]) {
     if (rules[field] !== null && (!Number.isFinite(rules[field]) || rules[field] < 0)) throw new Error(`${field} must be a nonnegative number or null.`);
   }
@@ -47,6 +48,20 @@ export function extractRules(brief: string, name: string): BrowserRow {
     if (match) { const values = match[1].replace(/\.$/, "").split(/\s*[,;/|]\s*/).map(value => mapping[value.toLowerCase()]); if (values.length && values.every(Boolean)) assign("allowed_platforms", [...new Set(values)], line); }
     match = line.match(/^(?:required\s+)?hashtags?\s*:\s*((?:#[\p{L}\p{N}_]+[ ,]*)+)$/iu);
     if (match) assign("required_hashtags", [...new Set(match[1].match(/#[\p{L}\p{N}_]+/gu))], line);
+    match=line.match(/^(?:required\s+)?(?:mentions?|accounts?|tags?)\s*:\s*(.+)$/i);
+    if(match){const mentions=match[1].match(/@[\p{L}\p{N}_.-]+/gu);if(mentions?.length)assign('required_mentions',[...new Set(mentions)],line);}
+    match=line.match(/^(?:required\s+)?(?:on[- ](?:screen|video)\s+(?:text|wording)|text\s+(?:in|on)\s+(?:the\s+)?video)\s*:\s*(.+)$/i);
+    if(match)assign('required_on_video_text',[match[1].trim().replace(/^["“]|["”]$/g,'')],line);
+    match=line.match(/^required\s+(?:description|caption)(?:\s+(?:text|phrase))?\s*:\s*(.+)$/i);
+    if(match)assign('required_description_phrases',[match[1].trim()],line);
+    if(/\b(?:must|required|mandatory|include|add|use)\b/i.test(line)&&!/\b(?:do not|don't|optional|prohibited|exclude)\b/i.test(line)&&!/^.*?:/.test(line)){
+      const tags=line.match(/#[\p{L}\p{N}_]+/gu),mentions=line.match(/@[\p{L}\p{N}_.-]+/gu);
+      if(tags)assign('required_hashtags',[...new Set([...rules.required_hashtags,...tags])],line);
+      if(mentions)assign('required_mentions',[...new Set([...rules.required_mentions,...mentions])],line);
+    }
+    if(/\b(?:must|required|include|write|display)\b/i.test(line)&&/on[- ]screen|on[- ]video|in (?:the )?video/i.test(line)){
+      const quoted=line.match(/["“]([^"”]+)["”]/);if(quoted)assign('required_on_video_text',[...new Set([...rules.required_on_video_text,quoted[1]])],line);
+    }
     match = line.match(/^(?:clip\s+)?duration\s*:\s*(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*(?:s|seconds?)\.?$/i);
     if (match) { assign("min_duration", Number(match[1]), line); assign("max_duration", Number(match[2]), line); }
     match = line.match(/^draft\s+(?:pre[- ]?)?approval\s*:\s*(required|not required|yes|no)\.?$/i);
@@ -140,15 +155,31 @@ export function manualPlan(selection: BrowserRow, source: BrowserRow, rules: Bro
   const tags = selection.hashtags || [];
   if (!Array.isArray(tags) || tags.length > 30 || tags.some(tag => typeof tag !== "string" || !/^#[\p{L}\p{N}_]+$/u.test(tag))) throw new Error("Use up to 30 hashtags containing letters, numbers, or underscores.");
   const scene = { start, end, crop_x: Number(selection.crop_x ?? .5), crop_y: Number(selection.crop_y ?? .5), zoom: Number(selection.zoom ?? 1), rationale: "User-selected source range and framing." };
-  const plan: BrowserRow = { title, start, end, scenes: [scene], hook: String(selection.hook || ""), show_hook: selection.show_hook === true, subtitle_style: selection.subtitle_style || "clean", subtitles_enabled: cues.length > 0, transcript_excerpt: cues.filter(cue => cue.end > start && cue.start < end).map(cue => cue.text).join(" "), content_type: "general", rationale: "Manual source selection; no AI analysis or ranking was performed.", generation_method: "manual_local", score_origin: "not_scored", semantic_notes: ["Review the actual video, context, framing, campaign rules, and permissions."], scores: { hook_strength: 0, engagement_potential: 0, clarity: 0, standalone_context: 0, campaign_relevance: 0 }, manual_metadata: { title, description: String(selection.description || ""), hashtags: [...new Set(tags)] }, edit_dna: { hook_structure: "User-selected opening", scene_order: "Original source order", cut_timing: `User chose ${start}–${end} seconds`, framing: "Manual crop and zoom", typography: "User-selected cue caption style", subtitle_treatment: cues.length ? "Uploaded exact cue timing, no invented word alignment" : "No uploaded captions", visual_effects: "No added effects", audio_treatment: "Original audio with local normalization", ending_structure: "User-selected endpoint" } };
+  const plan: BrowserRow = { title, start, end, scenes: [scene], hook: String(selection.hook || ""), show_hook: selection.show_hook === true, subtitle_style: selection.subtitle_style || "clean", subtitles_enabled: cues.length > 0, transcript_excerpt: cues.filter(cue => cue.end > start && cue.start < end).map(cue => cue.text).join(" "), content_type: "general", rationale: "Manual source selection; no AI analysis or ranking was performed.", generation_method: "manual_local", render_engine:selection.render_engine||"remotion", score_origin: "not_scored", semantic_notes: ["Review the actual video, context, framing, campaign rules, and permissions."], scores: { hook_strength: 0, engagement_potential: 0, clarity: 0, standalone_context: 0, campaign_relevance: 0 }, manual_metadata: { title, description: String(selection.description || ""), hashtags: [...new Set(tags)] }, edit_dna: { hook_structure: "User-selected opening", scene_order: "Original source order", cut_timing: `User chose ${start}–${end} seconds`, framing: "Manual crop and zoom", typography: "User-selected cue caption style", subtitle_treatment: cues.length ? "Uploaded exact cue timing, no invented word alignment" : "No uploaded captions", visual_effects: "No added effects", audio_treatment: "Original audio with local normalization", ending_structure: "User-selected endpoint" } };
   if (plan.manual_metadata.description.length > 2000 || plan.hook.length > 140) throw new Error("Shorten the description or opening hook.");
+  plan.required_on_video_text=[...(rules.required_on_video_text||[])];
   return validatePlan(plan, source.media_info.duration);
 }
 
+export function enforceCampaignMetadata(variant:BrowserRow,rules:BrowserRow):BrowserRow {
+  const result=structuredClone(variant),tags:string[]=[],seen=new Set<string>();
+  for(const tag of [...(rules.required_hashtags||[]),...(variant.hashtags||[]),...[variant.description||'',variant.caption||''].flatMap(t=>t.match(/#[\p{L}\p{N}_]+/gu)||[])])if(!seen.has(tag.toLocaleLowerCase())){tags.push(tag);seen.add(tag.toLocaleLowerCase());}
+  result.hashtags=tags;
+  const prefix=[...(rules.required_hashtags||[]),...(rules.required_mentions||[])].join(' ');
+  for(const field of ['description','caption']){
+    let text=String(variant[field]||'');
+    for(const tag of rules.required_hashtags||[]){const escaped=tag.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');text=text.replace(new RegExp('(^|[^\\p{L}\\p{N}_])'+escaped+'(?![\\p{L}\\p{N}_])','giu'),'$1').trim();}
+    for(const mention of rules.required_mentions||[]){const escaped=mention.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');text=text.replace(new RegExp('(^|[^\\p{L}\\p{N}_])'+escaped+'(?![\\p{L}\\p{N}_.-])','giu'),'$1').trim();}
+    text=[prefix,text].filter(Boolean).join('\n\n');
+    for(const phrase of [...(rules.required_disclosures||[]),...(rules.required_links||[]),...(rules.required_description_phrases||[])])if(!text.includes(phrase))text=[text,phrase].filter(Boolean).join('\n\n');
+    result[field]=text;
+  }
+  return result;
+}
+
 export function manualMetadata(plan: BrowserRow, rules: BrowserRow): BrowserRow {
-  const supplied = plan.manual_metadata || {}; let text = supplied.description || plan.transcript_excerpt || "";
-  for (const required of [...rules.required_mentions, ...rules.required_disclosures,...(rules.required_links||[])]) if (!containsRequiredToken(text, required)) text = (text + "\n\n" + required).trim();
-  const variant = { title: supplied.title || plan.title, description: text, caption: text, hashtags: [...new Set([...(supplied.hashtags || []), ...rules.required_hashtags])], keywords: [], opening_hook: plan.hook || "", call_to_action: "", score: 0, reasoning: "User-written metadata formatted locally. Not AI generated, optimized, or scored." };
+  const supplied = plan.manual_metadata || {};
+  const variant = enforceCampaignMetadata({title:supplied.title||plan.title,description:supplied.description||plan.transcript_excerpt||'',caption:supplied.description||plan.transcript_excerpt||'',hashtags:supplied.hashtags||[],keywords:[],opening_hook:plan.hook||'',call_to_action:'',score:0,reasoning:'User-written metadata formatted with required campaign text first; not AI generated or scored.'},rules);
   const metadata = Object.fromEntries(PLATFORMS.map(platform => [platform, { recommended_index: 0, variants: [structuredClone(variant), structuredClone(variant), structuredClone(variant)] }]));
   return validateMetadata(metadata);
 }
@@ -179,9 +210,10 @@ export function compliance(plan: BrowserRow, metadata: BrowserRow, rules: Browse
   for (const platform of rules.allowed_platforms.length ? rules.allowed_platforms : PLATFORMS) {
     const selected = metadata[platform].variants[metadata[platform].recommended_index];
     const text = [selected.title, selected.description, selected.caption, ...selected.hashtags].join(" ");
-    const missing = [...rules.required_hashtags, ...rules.required_mentions, ...rules.required_disclosures,...rules.required_links].filter(value => !containsRequiredToken(text, value));
+    const missing = [...rules.required_hashtags, ...rules.required_mentions, ...rules.required_disclosures,...rules.required_links,...(rules.required_description_phrases||[])].filter(value => !containsRequiredToken(text, value));
     add(`metadata_${platform}`, missing.length ? "FAIL" : "PASS", missing.length ? "Missing required campaign text: " + missing.join(", ") : "Selected metadata includes the supplied mandatory text.");
   }
+  if(rules.required_on_video_text.length){const missing=rules.required_on_video_text.filter((t:string)=>!plan.required_on_video_text?.includes(t));if(missing.length)add('on_video_text','FAIL','Required visible wording is missing from the render plan: '+missing.join('; '));else review('on_video_text','Review exact required text and readability in the actual video: '+rules.required_on_video_text.join('; '));}
   for (const [field, rule] of [["required_branding", "branding"], ["prohibited_content", "content_restrictions"], ["audio_restrictions", "audio_restrictions"], ["permitted_source_material", "source_material"]]) if (rules[field].length) review(rule, "Review the actual video against: " + rules[field].join("; "));
   if (rules.required_disclosures.some((value: string) => /on.?screen|spoken|verbal|audio/i.test(value))) review('disclosures', 'Verify the required disclosure delivery in the actual video. Metadata text alone does not establish on-screen or spoken compliance.');
   if (rules.draft_approval_required === true) add("draft_approval", draftApproved ? "PASS" : "REVIEW_REQUIRED", "Campaign draft approval must be confirmed before publication.");

@@ -1,5 +1,18 @@
 # AI Clip Factory
 
+## Clip rules, Remotion and free online editing
+
+Text/PDF clip rules are visible in Create Clips. Required #hashtags and @mentions lead publication text; exact required on-screen wording is rendered into the video. The online edition reads text-based PDFs with PDF.js and uses Remotion for its final video layers, retaining a free FFmpeg compatibility mode. Settings includes a guided YouTube/TikTok developer-app setup flow. Actual authorization still requires registered developer apps and approved permissions; GitHub Pages cannot hold client secrets.
+
+The `codex/unified-creation` upgrade opens with **Create Clips → Generated Clips → Video Library → Analytics → Settings**. Choose an authorized video, optionally supply a campaign PDF/text, select count/duration/style/platform, and click **Generate Clips**. Defaults are 3 clips, 10 seconds, Opus-Style Gaming and Both. Local models produce editable drafts and separate YouTube/TikTok publication alternatives. The new gallery groups clips by campaign; editing, selective metadata regeneration, version restoration and publication review happen there. Original videos and legacy records remain available. See [rules and Remotion delivery](docs/RULES_REMOTION_DELIVERY.md) for this update and actual validation. GitHub Pages is the free manual browser edition; automatic model inference requires the native localhost services.
+
+From the project folder, run `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1 -Setup` once for free dependencies/models, then `powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1`. Use an existing Python3.12 `.venv`, Node, Ollama and `.env` (copy `.env.example` for a new checkout). Open http://localhost:3000. No paid AI key is needed. A public YouTube research key is optional; missing research is explicitly labeled.
+
+See [implementation and actual validation](docs/LOCAL_ULTIMATE.md). Tests using controlled inference are distinct from real local-model acceptance. The tested model override is `qwen3-vl:4b-instruct`; the configurable provider default remains the requested `qwen3-vl:4b`.
+
+For the redesign's evidence and remaining limits, see [Redesign delivery](docs/REDESIGN_DELIVERY.md), [reference inspection](docs/REDESIGN_REFERENCE_ANALYSIS.md), [Ultimate platform](docs/ULTIMATE_PLATFORM.md), [third-party audit](THIRD_PARTY_LICENSES.md), and [optional social setup](docs/SOCIAL_SETUP.md). Social connections are opt-in and independent of free local AI. Real publishing needs your official developer configuration, account authorization, current-version approval and explicit posting consent; no platform credentials are required for local video creation.
+
+
 A free clipping workspace with **no login, paid AI API, or subscription requirement**. The GitHub Pages edition stores your videos and project records in your browser and renders clips there with FFmpeg WebAssembly. It needs no Python server, cloud worker, OpenAI key, or local AI model.
 
 Choose a simple manual clip or use the browser edition's Creative Director to measure source frames and build editable, source-bound concepts. These are local assisted proposals, not semantic AI analysis. Optional supplied SRT/VTT subtitles and user-authored metadata remain the evidence for words and claims. No AI transcription, event detection, or viral prediction is performed. Your existing device, electricity, disk, and internet are still needed. See [implementation status](docs/STATUS.md) for verification and limitations. This project is separate from LogEN.
@@ -19,7 +32,7 @@ No account or API key is required:
 
 ## Creative Director
 
-This section is available in the **browser edition**. The optional Python edition keeps its existing manual clip workflow.
+This section describes the **browser edition**. The native edition also offers AUTO CREATE through the local setup above and retains manual clipping.
 
 1. Import an authorized source through **Create Clips**, and save/review a campaign if the edit is for one. Open **AI Creative Director**, then select that source and campaign.
 2. Choose a preferred duration, pace, audience, style, and output size. Analyze the source and create concepts. Local measurements include up to 24 decoded frame samples, candidate visual changes, brightness/detail, low-confidence crop hints, and bounded audio-level analysis when the browser can decode it. No person, game event, scene meaning, or dialogue is recognized.

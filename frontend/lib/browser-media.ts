@@ -58,6 +58,17 @@ export async function inspectVideo(blob: Blob): Promise<BrowserRow> {
   } finally { URL.revokeObjectURL(url); }
 }
 
+export async function verifyBrowserOutput(blob:Blob,expected:BrowserRow):Promise<BrowserRow>{
+  const engine=await ffmpeg(),prefix='verify-'+crypto.randomUUID(),name=prefix+'.mp4',json=prefix+'.json';
+  try{
+    await engine.writeFile(name,new Uint8Array(await blob.arrayBuffer()));
+    const measured=await probe(engine,name,['-protocol_whitelist','file,pipe','-f','mov'],json);
+    if(measured.codec!=='h264'||!measured.has_audio||measured.width!==expected.width||measured.height!==expected.height||Math.abs(measured.duration-expected.duration)>.3)throw new Error('Remotion output does not match the required format, duration or audio.');
+    if(await withDeadline(engine.exec(['-v','error','-protocol_whitelist','file,pipe','-f','mov','-i',name,'-f','null','-'],300000),330000)!==0)throw new Error('Remotion output failed complete decode verification.');
+    return {...measured,decode_verified:true,size_bytes:blob.size};
+  }finally{for(const file of [name,json])try{await engine.deleteFile(file);}catch{}}
+}
+
 function inputOptions(bytes: Uint8Array): string[] {
   const signature = String.fromCharCode(...bytes.slice(4, 8));
   if (["ftyp", "moov", "mdat", "wide", "free", "skip"].includes(signature)) return ["-protocol_whitelist", "file,pipe", "-format_whitelist", "mov", "-f", "mov", "-enable_drefs", "0", "-use_absolute_path", "0"];
