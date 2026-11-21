@@ -375,7 +375,7 @@ function ClipDetails({clip,editing,onUpdate,notify,freeMode}:{clip:Row;editing:b
 
   useEffect(()=>setVariant(metadata[platform]?.recommended_index||0),[platform,clip.id]);
 
-  async function regenerateMetadata(){if(freeMode){notify("Edit the metadata fields directly. Paid AI optimization is disabled in free local mode.");return;}setBusy(true);try{await api(`/clips/${clip.id}/regenerate-metadata`,{method:"POST"});notify("Metadata regenerated and compliance checked.");onUpdate();}catch(e){notify((e as Error).message);}finally{setBusy(false);}}
+  async function regenerateMetadata(){setBusy(true);try{await api(`/clips/${clip.id}/regenerate-metadata`,{method:"POST"});notify("Metadata regenerated and compliance checked.");onUpdate();}catch(e){notify((e as Error).message);}finally{setBusy(false);}}
 
   async function regenerate(e:FormEvent<HTMLFormElement>){e.preventDefault();setBusy(true);const f=new FormData(e.currentTarget);try{
 
@@ -407,7 +407,7 @@ function ClipDetails({clip,editing,onUpdate,notify,freeMode}:{clip:Row;editing:b
 
     {Object.keys(option).length?<MetadataEditor key={`${clip.id}-${clip.current_version}-${platform}-${variant}`} clip={clip} freeMode={freeMode} platform={platform} variant={variant} option={option} onUpdate={onUpdate} notify={notify}/>:<p>No metadata available for this platform.</p>}
 
-    {freeMode?<div className="info-line"><ShieldCheck size={14}/>Metadata is editable above. Paid AI optimization is disabled.</div>:<button className="button secondary" disabled={busy} onClick={regenerateMetadata}>{busy?<LoaderCircle className="spin" size={14}/>:<WandSparkles size={14}/>}Optimize titles, captions & hashtags</button>}</div>}
+    <button className="button secondary" disabled={busy} onClick={regenerateMetadata}>{busy?<LoaderCircle className="spin" size={14}/>:<WandSparkles size={14}/>}Suggest titles, captions &amp; hashtags</button></div>}
 
     {tab==="compliance"&&<div className="form-body"><Badge tone={clip.compliance?.status==="PASS"?"mint":"amber"}>{status(clip.compliance?.status||"review required")}</Badge>{(clip.compliance?.checks||[]).map((check:Row,i:number)=><div className="compliance-check" key={i}><ShieldCheck size={16}/><div><strong>{status(check.rule||check.name)}</strong><p>{check.detail||check.message||check.reason}</p></div><Badge tone={check.status==="PASS"?"mint":check.status==="FAIL"?"red":"amber"}>{status(check.status)}</Badge></div>)}
 
@@ -437,7 +437,7 @@ function MetadataEditor({clip,platform,variant,option,onUpdate,notify,freeMode}:
 
     {[{key:"title",label:"Title",max:100},{key:"caption",label:"Caption",max:2200},{key:"description",label:"Description",max:5000},{key:"opening_hook",label:"Opening hook",max:250},{key:"hashtags",label:"Hashtags",max:2000}].map(field=><label key={field.key}>{field.label}<textarea name={field.key} rows={field.key==="description"?4:2} defaultValue={Array.isArray(option[field.key])?option[field.key].join(" "):option[field.key]||""} maxLength={field.max} required={field.key==="title"}/></label>)}
 
-    {option.reasoning&&<p className="metadata-reasoning">{option.reasoning}<br/>{freeMode?"User-supplied metadata · no AI score":"Heuristic score: "+option.score+"/100"}</p>}
+    {option.reasoning&&<p className="metadata-reasoning">{option.reasoning}<br/>{freeMode?(option.provenance==="app_proposed"?"App-proposed copy · review before publishing":"Edited publication text · no performance score"):"Heuristic score: "+option.score+"/100"}</p>}
 
     <div className="button-row"><button className="button secondary" type="button" onClick={async()=>{const text=platform==="tiktok"?option.caption:option.description;const tags=(option.hashtags||[]).filter((tag:string)=>!String(text).includes(tag));await navigator.clipboard.writeText([text,tags.join(" ")].filter(Boolean).join("\n\n"));notify("Publication text copied with required wording first.");}}><Copy size={13}/>Copy publication text</button><button className="button primary" disabled={busy}><Check size={13}/>{freeMode?"Save metadata":"Save & recommend"}</button></div></form>;
 

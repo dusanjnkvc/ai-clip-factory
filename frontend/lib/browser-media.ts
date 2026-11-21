@@ -1,5 +1,5 @@
 /** Real single-thread FFmpeg WebAssembly, loaded only from this site's assets. */
-import type { FFmpeg as FFmpegInstance } from "@ffmpeg/ffmpeg";
+import type { FFmpeg as FFmpegInstance, FFFSType } from "@ffmpeg/ffmpeg";
 import type { BrowserRow } from "./browser-db";
 import type { CaptionCue } from "./browser-rules";
 
@@ -145,7 +145,7 @@ function cropChain(info:BrowserRow,w:number,h:number,scene:BrowserRow):string {
 
 export async function renderBrowserClip(source:Blob,plan:BrowserRow,cues:CaptionCue[],mode:string,onProgress:(stage:string,percent:number)=>Promise<void>,sourceFiles:Record<string,SourceFile>={}):Promise<{blob:Blob;media_info:BrowserRow}>{
   await onProgress('Loading the local browser FFmpeg engine',5);
-  const engine=await ffmpeg(),prefix='job-'+crypto.randomUUID(),files:string[]=[];
+  const engine=await ffmpeg(),prefix='job-'+crypto.randomUUID(),files:string[]=[],mounts:string[]=[];
   const output=prefix+'-render.mp4',captionFile=prefix+'-captions.ass',outputProbe=prefix+'-output.json';
   files.push(output,captionFile,outputProbe);logs.length=0;
   const mainId=plan.source_id||'__main__';
@@ -156,12 +156,19 @@ export async function renderBrowserClip(source:Blob,plan:BrowserRow,cues:Caption
   const inputs:BrowserRow={},inputArgs:string[]=[];
   try{
     if(ids.length>5)throw new Error('One browser export supports up to five authorized source files.');
-    if(ids.reduce((sum,id)=>sum+(sources[id]?.blob.size||0),0)>250*1024*1024)throw new Error('The selected sources exceed the 250 MB combined browser-render allowance. Use shorter source files.');
+    if(ids.reduce((sum,id)=>sum+(sources[id]?.blob.size||0),0)>1500*1024*1024)throw new Error('The selected sources exceed the 1,500 MB combined browser-render allowance.');
     for(const [index,id] of ids.entries()){
       if(!sources[id])throw new Error('A storyboard source is missing. Add its authorized footage before rendering.');
-      const bytes=new Uint8Array(await sources[id].blob.arrayBuffer()),options=inputOptions(bytes);
-      const input=`${prefix}-source-${index}`,probeFile=`${prefix}-probe-${index}.json`;files.push(input,probeFile);
-      await engine.writeFile(input,bytes);const info=await probe(engine,input,options,probeFile);
+      const blob=sources[id].blob,options=inputOptions(new Uint8Array(await blob.slice(0,32).arrayBuffer()));
+      let input=`${prefix}-source-${index}`;const probeFile=`${prefix}-probe-${index}.json`;files.push(probeFile);
+      if(blob.size>128*1024*1024){
+        // WORKERFS reads Blob slices on demand instead of copying gigabytes
+        // into JavaScript and then again into FFmpeg's WebAssembly heap.
+        const mount=`/${prefix}-mount-${index}`;await engine.createDir(mount);mounts.push(mount);
+        if(!await engine.mount('WORKERFS' as FFFSType,{blobs:[{name:'source',data:blob}]},mount))throw new Error('This browser could not open the large source file.');
+        input=mount+'/source';
+      }else{files.push(input);await engine.writeFile(input,new Uint8Array(await blob.arrayBuffer()));}
+      const info=await probe(engine,input,options,probeFile);
       inputs[id]={index,info};inputArgs.push(...options,'-i',input);
     }
     await onProgress('Building the validated source timeline',15);
@@ -211,5 +218,5 @@ export async function renderBrowserClip(source:Blob,plan:BrowserRow,cues:Caption
     const blob=new Blob([encoded.slice().buffer as ArrayBuffer],{type:'video/mp4'});
     return {blob,media_info:{...rendered,decode_verified:true,subtitle_synchronized:true,subtitle_timing:captions.count?'cue':'none',subtitle_words:0,subtitle_phrases:captions.count,source_had_audio:inputs[mainId].info.has_audio,source_count:ids.length,size_bytes:blob.size,renderer:'ffmpeg_wasm_single_thread'}};
   }catch(failure){engine.terminate();instance=undefined;throw failure instanceof Error?failure:new Error(String(failure));}
-  finally{currentProgress=undefined;if(engine.loaded)for(const file of files)try{await engine.deleteFile(file);}catch{/* Failed files may not exist. */}}
+  finally{currentProgress=undefined;if(engine.loaded){for(const mount of mounts){try{await engine.unmount(mount);}catch{}try{await engine.deleteDir(mount);}catch{}}for(const file of files)try{await engine.deleteFile(file);}catch{/* Failed files may not exist. */}}}
 }

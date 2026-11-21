@@ -250,7 +250,7 @@ def test_expired_attendance_stops_before_any_external_upload(environment,monkeyp
 
 def test_full_api_bounds_unauthenticated_upload_before_parsing(environment):
     client,_,_=environment
-    response=client.post('/api/sources',content=b'',headers={'Content-Length':str(600*1024*1024)})
+    response=client.post('/api/sources',content=b'',headers={'Content-Length':str((main.settings.max_upload_mb+2)*1024*1024)})
     assert response.status_code==413
     assert 'upload limit' in response.json()['detail']
 

@@ -43,3 +43,5 @@
 .generation-progress h3{min-width:0;overflow-wrap:anywhere}
 
 .account-setup{padding:28px;margin-bottom:24px;gap:18px}.account-setup ol{padding-left:24px;line-height:1.8}.account-setup a{color:#c5b0ff;text-decoration:underline}.rules-summary{padding:16px;border:1px solid #584366;border-radius:8px}
+
+.publishing-proposals{padding:20px;border:1px solid var(--border,#3d334a);border-radius:14px;background:rgba(182,167,250,.05);display:grid;gap:14px}.publishing-proposals h3,.publishing-proposals p{margin:0}.proposal-options{display:grid;gap:10px}.proposal-options label{display:flex;align-items:flex-start;gap:12px;padding:12px;border:1px solid var(--border,#3d334a);border-radius:10px;cursor:pointer}.proposal-options input{width:auto;margin-top:4px}.proposal-caption{white-space:pre-wrap;line-height:1.6}.proposal-tags{color:#c4b5fd;overflow-wrap:anywhere}

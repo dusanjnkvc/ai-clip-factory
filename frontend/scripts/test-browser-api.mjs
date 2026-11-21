@@ -11,7 +11,7 @@ import ts from "typescript";
 const temporary = await mkdtemp(path.join(tmpdir(), "acf-browser-api-tests-"));
 await mkdir(path.join(temporary, "creative"));
 after(() => rm(temporary, { recursive: true, force: true }));
-const names = ["browser-api", "browser-rules", "browser-pdf", ...["types", "styles", "compliance", "director", "publishing", "index"].map(name => `creative/${name}`)];
+const names = ["browser-api", "browser-rules", "browser-pdf", "browser-metadata", ...["types", "styles", "compliance", "director", "publishing", "index"].map(name => `creative/${name}`)];
 for (const name of names) {
   const source = await readFile(new URL(`../lib/${name}.ts`, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
@@ -90,6 +90,34 @@ test("the browser workspace is free and opens without a login", async () => {
   assert.equal(health.free_mode,true); assert.equal(health.local_no_auth,true);
   assert.equal(health.external_calls_enabled,false); assert.equal(health.monthly_spend_limit_usd,0);
   assert.equal(user.local_workspace,true);
+  assert.equal(health.max_upload_mb,1500);
+});
+
+test('browser upload accepts the 1500 MB boundary and rejects the next byte before media inspection',async()=>{
+  const maximum=1500*1024*1024;
+  function upload(size){
+    const file=new File(['size-gate-fixture'],'owned.mp4',{type:'video/mp4'});
+    Object.defineProperty(file,'size',{value:size});
+    const form=new class extends FormData {get(key){return key==='file'?file:super.get(key);}};
+    form.set('rights_confirmed','true');form.set('rights_note','Generated boundary test fixture');return form;
+  }
+  await assert.rejects(browserApi('/sources',{method:'POST',body:upload(maximum)}),/Uploads are outside these API integration tests/);
+  await assert.rejects(browserApi('/sources',{method:'POST',body:upload(maximum+1)}),/1,500 MB/);
+});
+
+test('automatic publishing text needs no user title, caption or tags, and preserves campaign priority',async()=>{
+  const campaignRules=validateRules({...rules,required_hashtags:['#CampaignFirst'],required_mentions:['@brand']});
+  await db.setRecord('campaigns',{id:'campaign',name:'Rules',rules:campaignRules});
+  await db.setRecord('sources',{...source,filename:'Minecraft gameplay.mp4'});
+  await db.setRecord('subtitles',{id:source.id,cues:[{start:1,end:3,text:'How did that happen?'},{start:35,end:38,text:'Outside the selected clip'}]});
+  const job=await browserApi('/jobs',request({source_id:source.id,campaign_id:'campaign',manual_selection:{start:0,end:8,metadata_mode:'automatic'}}));
+  const done=await settled(job.id);assert.equal(done.status,'completed',done.error);
+  const clip=(await db.listRecords('clips'))[0],options=clip.metadata_json.youtube.variants;
+  assert.equal(new Set(options.map(v=>v.title)).size,3);
+  for(const option of options){assert.equal(option.provenance,'app_proposed');assert.ok(option.description.startsWith('#CampaignFirst @brand\n\n'));assert.ok(option.hashtags.includes('#Gaming'));assert.ok(!JSON.stringify(option).includes('Outside the selected clip'));assert.equal(option.score,0);}
+  assert.equal(clip.plan.metadata_origin,'app_proposed');
+  const refreshed=await browserApi(`/clips/${clip.id}/regenerate-metadata`,request({}));
+  assert.equal(refreshed.storage_key,clip.storage_key);assert.deepEqual(refreshed.plan,clip.plan);assert.equal(refreshed.current_version,clip.current_version+1);
 });
 
 test("director projects retain manual draft changes through save and reload", async () => {

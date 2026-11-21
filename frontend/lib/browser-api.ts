@@ -6,9 +6,11 @@ import { audit, claimQueuedJob, getBlob, getRecord, listRecords, mediaUrl, modif
 import { compliance, extractRules, manualMetadata, manualPlan, parseSubtitles, validateMetadata, validatePlan, validateRules,enforceCampaignMetadata, type CaptionCue } from "./browser-rules";
 import { inspectVideo } from "./browser-media";
 import {renderClipForBrowser} from './browser-rendering';
+import {proposePublishing} from './browser-metadata';
 
 const LOCAL_USER = { id: "browser-local-owner", name: "Local", email: "", local_workspace: true };
-const SOURCE_LIMIT = 150 * 1024 * 1024;
+const SOURCE_LIMIT_MB = 1500;
+const SOURCE_LIMIT = SOURCE_LIMIT_MB * 1024 * 1024;
 let initialization: Promise<void> | undefined;
 let queueRunning = false;
 const runnerId = (() => {
@@ -17,7 +19,7 @@ const runnerId = (() => {
 })();
 
 function configuration(): BrowserRow {
-  return { free_mode: true, local_no_auth: true, browser_mode: true, processing_provider: "browser_manual", external_calls_enabled: false, ai: false, ffmpeg: true, storage: "browser_indexeddb", youtube: false, ai_model: null, transcription_model: null, max_upload_mb: 150, max_clip_seconds: 180, monthly_spend_limit_usd: 0, max_job_cost_usd: 0, retention_days: null, publishing: { youtube: "manual_package", tiktok: "manual_package", instagram: "manual_package", content_rewards: "manual_submission" }, budget_note: "No paid AI, storage subscription or rendering service is required. This browser supplies processing and site storage. Remotion sends render-usage telemetry; video files stay on your device until you choose to upload them. Keep the tab open while rendering." };
+  return { free_mode: true, local_no_auth: true, browser_mode: true, processing_provider: "browser_manual", external_calls_enabled: false, ai: false, ffmpeg: true, storage: "browser_indexeddb", youtube: false, ai_model: null, transcription_model: null, max_upload_mb: SOURCE_LIMIT_MB, max_clip_seconds: 180, monthly_spend_limit_usd: 0, max_job_cost_usd: 0, retention_days: null, publishing: { youtube: "manual_package", tiktok: "manual_package", instagram: "manual_package", content_rewards: "manual_submission" }, budget_note: "No paid AI, storage subscription or rendering service is required. This browser supplies processing and site storage. Remotion sends render-usage telemetry; video files stay on your device until you choose to upload them. Keep the tab open while rendering." };
 }
 
 async function initialize(): Promise<void> {
@@ -170,13 +172,23 @@ async function queueRender(data: BrowserRow): Promise<BrowserRow> {
   const subtitle = await getRecord("subtitles", source.id);
   const available=await listRecords('sources');
   const durations=Object.fromEntries(available.map(item=>[item.id,item.media_info.duration]));
-  const plan = data.plan ? validatePlan({...data.plan,source_id:source.id}, source.media_info.duration,durations) : manualPlan(data.manual_selection || {}, source, campaign.rules, subtitle?.cues || []);
+  let selection=data.manual_selection||{},proposed:BrowserRow|undefined;
+  const rules=data.rules_snapshot||campaign.rules;
+  if(!data.plan&&(selection.metadata_mode==='automatic'||!String(selection.title||'').trim())){
+    proposed=proposePublishing(source,selection,subtitle?.cues||[],rules);
+    const index=Math.max(0,Math.min(2,Number(selection.suggested_variant)||0));
+    for(const block of Object.values(proposed.metadata) as BrowserRow[])block.recommended_index=index;
+    const chosen=proposed.metadata.youtube.variants[index];
+    selection={...selection,title:chosen.title,description:chosen.description,hashtags:chosen.hashtags,hook:selection.hook||chosen.opening_hook,show_hook:selection.show_hook===true||!selection.hook};
+  }
+  const plan = data.plan ? validatePlan({...data.plan,source_id:source.id}, source.media_info.duration,durations) : manualPlan(selection, source, rules, subtitle?.cues || []);
+  if(proposed)plan.metadata_origin='app_proposed';
   if(plan.creative_concept){
     plan.manual_decisions=String(data.director?.manual_decision_note||plan.manual_decisions||plan.creative_concept.manual_decisions||'');
     await creativePreflight(plan,available,data.rules_snapshot||campaign.rules);
     if(data.director?.project_id)await required('director_projects',data.director.project_id);
   }
-  const job = { id: recordId(), created_at: timestamp(), source_id: source.id, campaign_id: campaign.id, campaign_name: campaign.name, director:data.director||null, mode: data.mode || "fast", clip_count: 1, status: "queued", stage: "Waiting for this tab's local renderer", progress: 0, attempts: 0, completed_clips: 0, cost_reservation: 0, rules_snapshot: structuredClone(data.rules_snapshot || campaign.rules), payload: { manual_selection: data.manual_selection, plan, ...(data.payload || {}) } };
+  const job = { id: recordId(), created_at: timestamp(), source_id: source.id, campaign_id: campaign.id, campaign_name: campaign.name, director:data.director||null, mode: data.mode || "fast", clip_count: 1, status: "queued", stage: "Waiting for this tab's local renderer", progress: 0, attempts: 0, completed_clips: 0, cost_reservation: 0, rules_snapshot: structuredClone(rules), payload: { manual_selection: selection, plan, ...(proposed?{metadata:proposed.metadata}:{}), ...(data.payload || {}) } };
   await setRecord("jobs", job);
   await audit("job.queued", job.id, { processing_provider: "browser_manual", cost_reservation: 0 });
   void pumpQueue();
@@ -271,7 +283,7 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     if (parts.length === 1 && method === "POST") {
       const { file, data } = uploaded(options);
       if (data.get("rights_confirmed") !== "true" || String(data.get("rights_note") || "").trim().length < 8) throw new Error("Confirm source rights and supply a meaningful ownership or permission note.");
-      if (file.size > SOURCE_LIMIT || !/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)) throw new Error("Browser mode accepts playable MP4/MOV/WebM/Matroska files up to 150 MB.");
+      if (file.size > SOURCE_LIMIT || !/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)) throw new Error(`Browser mode accepts playable MP4/MOV/WebM/Matroska files up to ${SOURCE_LIMIT_MB.toLocaleString('en-US')} MB.`);
       const mediaInfo = await inspectVideo(file), id = recordId(), key = `sources/${id}`;
       await putBlob(key, file);
       const record = { id, created_at: timestamp(), filename: file.name, storage_key: key, size_bytes: file.size, media_info: mediaInfo, rights_confirmed: true, original_creator:data.get('source_role')==='original_creator', rights_note: String(data.get("rights_note")), rights_recorded_at: timestamp() };
@@ -319,7 +331,15 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
       const values = body(options); if (values.optimize_metadata) throw new Error("AI metadata generation is disabled. Use the manual metadata editor.");
       return queueRender({ campaign_id: clip.campaign_id, source_id: clip.source_id, plan: values.plan || clip.plan, mode: values.mode || "fast", rules_snapshot: clip.rules_snapshot, payload: { clip_id: clip.id, base_version: clip.current_version, metadata: clip.metadata_json } });
     }
-    if (parts[2] === "regenerate-metadata" || parts[2] === "publish") throw new Error("This free browser workspace uses manual editing and upload packages. No hosted AI or direct social publishing is connected.");
+    if(parts[2]==='regenerate-metadata'&&method==='POST'){
+      const source=await required('sources',clip.source_id),cues=(await getRecord('subtitles',source.id))?.cues||[];
+      const generation=Number(clip.metadata_generation||0)+1;
+      const metadata=validateMetadata(proposePublishing(source,clip.plan,cues,clip.rules_snapshot,generation).metadata);
+      const next:BrowserRow={...clip,metadata_generation:generation,metadata_json:metadata,current_version:clip.current_version+1,draft_approved:false,compliance:compliance(clip.plan,metadata,clip.rules_snapshot,clip.media_info,source.rights_confirmed),versions:[...clip.versions,{id:recordId(),version:clip.current_version+1,created_at:timestamp(),plan:clip.plan,metadata_json:metadata,storage_key:clip.storage_key}]};
+      next.status=next.compliance.status==='PASS'?'ready':'review';
+      await setRecord('clips',next);await audit('clip.metadata_proposed',clip.id,{basis:'source filename and supplied subtitle cues'});return clipJson(next);
+    }
+    if (parts[2] === "publish") throw new Error("Download your upload package and publish through your authorized platform account.");
     if (parts[2] === "record-publication" && method === "POST") {
       const values = body(options), url = validateUrl(values.url, values.platform), published = new Date(values.published_at);
       if (String(values.confirmation || "").trim().length < 8 || !Number.isFinite(published.getTime()) || published.getTime() > Date.now() + 60000) throw new Error("Confirm the actual post and provide its actual publication timestamp.");
