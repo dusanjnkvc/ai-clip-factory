@@ -9,7 +9,7 @@ export default function WorkspaceSettings({ config, freeMode, localNoAuth, aiRea
   const ffmpegReady = config.ffmpeg === true || config.ffmpeg?.configured;
   const browserMode = config.browser_mode === true;
   const services = freeMode ? [
-    { name: "Local FFmpeg rendering", ready: ffmpegReady, label: ffmpegReady ? "Ready" : browserMode ? "Loads on render" : "Checking", detail: browserMode ? "Video encoding runs in this browser. Keep the app open while rendering." : "Native FFmpeg encodes on this computer, using a supported hardware encoder when available." },
+    { name: "Remotion and FFmpeg rendering", ready: ffmpegReady, label: ffmpegReady ? "Ready" : browserMode ? "Loads on render" : "Checking", detail: browserMode ? "Video encoding runs in this browser. Keep the app open while rendering." : "FFmpeg prepares the source timeline; Remotion adds the final text layers on this computer." },
     { name: "Paid AI requests", ready: true, label: "Blocked", detail: "Paid cloud AI is blocked. Native footage analysis, speech transcription and metadata use your installed local models; no paid API key is required." },
     { name: "Source and clip storage", ready: true, label: browserMode ? "This browser" : "Local disk", detail: browserMode ? "Source files and project records are stored in this browser on your device." : "Original videos, render versions, and project records are saved on this computer." },
     { name: "Optional subtitles", ready: true, label: "SRT / VTT", detail: "Upload an existing caption file. Native creation can transcribe speech locally. The browser edition uses supplied subtitle cues." },
