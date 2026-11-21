@@ -34,16 +34,19 @@ def enforce_metadata(variant, rules):
         for phrase in campaign.required_title_phrases:
             if phrase not in result['title']:
                 result['title'] = phrase + ' ' + result['title']
-    required = campaign.required_mentions + campaign.required_disclosures + campaign.required_links + campaign.required_description_phrases
+    prefix=' '.join([*campaign.required_hashtags,*campaign.required_mentions])
+    required = campaign.required_disclosures + campaign.required_links + campaign.required_description_phrases
     for field in ('description', 'caption'):
         text = result.get(field, '')
         # Move all hashtag tokens into the final, campaign-first sequence.
-        embedded = re.findall(r'(?<!\w)#[\w]+', text)
-        text = re.sub(r'(?<!\w)#[\w]+', '', text).strip()
+        for tag in campaign.required_hashtags:
+            text=re.sub(r'(?<!\w)'+re.escape(tag)+r'(?!\w)','',text,flags=re.I).strip()
+        for mention in campaign.required_mentions:
+            text=re.sub(r'(?<!\w)'+re.escape(mention)+r'(?![\w.-])','',text,flags=re.I).strip()
+        if prefix:text=re.sub(r'\n[ \t]*(?:\n[ \t]*)+','\n\n',text)
+        text=(prefix+'\n\n'+text).strip() if prefix else text
         for phrase in required:
             if phrase not in text:
                 text = (text + '\n\n' + phrase).strip()
-        if embedded and result['hashtags']:
-            text = (text + '\n\n' + ' '.join(result['hashtags'])).strip()
         result[field] = text
     return result

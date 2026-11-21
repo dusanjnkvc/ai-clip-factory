@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+from .services.social_settings import value as social_setting
 import secrets
 import time
 from datetime import timedelta
@@ -22,10 +23,10 @@ from .runtime import free_mode,social_enabled
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly','https://www.googleapis.com/auth/yt-analytics.readonly']
 
 def configured():
-    return social_enabled() and all(os.getenv(key) for key in ('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'))
+    return social_enabled() and all(social_setting(key) for key in ('YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','YOUTUBE_REDIRECT_URI','TOKEN_ENCRYPTION_KEY'))
 
 def cipher():
-    key = os.getenv('TOKEN_ENCRYPTION_KEY')
+    key = social_setting('TOKEN_ENCRYPTION_KEY')
     if not key:
         raise HTTPException(503, 'Set TOKEN_ENCRYPTION_KEY before connecting an account.')
     try:
@@ -44,7 +45,7 @@ def authorization_url(db, user_id):
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
     db.add(OAuthState(user_id=user_id, state_hash=token_hash(state), verifier=verifier, expires_at=now()+timedelta(minutes=10)))
     db.commit()
-    return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'redirect_uri':os.environ['YOUTUBE_REDIRECT_URI'], 'response_type':'code', 'scope':' '.join(SCOPES), 'state':state, 'access_type':'offline', 'prompt':'consent', 'code_challenge':challenge, 'code_challenge_method':'S256'})
+    return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({'client_id':social_setting('YOUTUBE_CLIENT_ID'), 'redirect_uri':social_setting('YOUTUBE_REDIRECT_URI'), 'response_type':'code', 'scope':' '.join(SCOPES), 'state':state, 'access_type':'offline', 'prompt':'consent', 'code_challenge':challenge, 'code_challenge_method':'S256'})
 
 def finish_oauth(db, user, state, code):
     if not social_enabled():
@@ -56,7 +57,7 @@ def finish_oauth(db, user, state, code):
     db.delete(row)
     db.commit()
     with httpx.Client(timeout=60) as client:
-        response = client.post('https://oauth2.googleapis.com/token', data={'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'], 'redirect_uri':os.environ['YOUTUBE_REDIRECT_URI'], 'grant_type':'authorization_code', 'code':code, 'code_verifier':verifier})
+        response = client.post('https://oauth2.googleapis.com/token', data={'client_id':social_setting('YOUTUBE_CLIENT_ID'), 'client_secret':social_setting('YOUTUBE_CLIENT_SECRET'), 'redirect_uri':social_setting('YOUTUBE_REDIRECT_URI'), 'grant_type':'authorization_code', 'code':code, 'code_verifier':verifier})
         if response.status_code != 200:
             raise HTTPException(400, 'YouTube authorization failed. Reconnect the account.')
         credentials = response.json()
@@ -87,7 +88,7 @@ def access_token(db, account):
     refresh = credentials.get('refresh_token')
     if not refresh:
         raise ValueError('Reconnect YouTube to grant offline access.')
-    response = httpx.post('https://oauth2.googleapis.com/token', data={'client_id':os.environ['YOUTUBE_CLIENT_ID'], 'client_secret':os.environ['YOUTUBE_CLIENT_SECRET'], 'grant_type':'refresh_token','refresh_token':refresh}, timeout=60)
+    response = httpx.post('https://oauth2.googleapis.com/token', data={'client_id':social_setting('YOUTUBE_CLIENT_ID'), 'client_secret':social_setting('YOUTUBE_CLIENT_SECRET'), 'grant_type':'refresh_token','refresh_token':refresh}, timeout=60)
     if response.status_code != 200:
         if response.status_code in {400,401}:
             account.status='reauthorization_required';db.commit()

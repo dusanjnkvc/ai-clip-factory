@@ -2,6 +2,8 @@
 import {useEffect,useState} from 'react';
 import {api} from '@/lib/api';
 import {DraftEditor} from './studio';
+import dynamic from 'next/dynamic';
+const RemotionPreview=dynamic(()=>import('./remotion-preview'),{ssr:false});
 type Row=Record<string,any>;
 
 export default function ClipEditor({draft,onClose,onSaved}:{draft:Row;onClose:()=>void;onSaved:()=>Promise<void>}){
@@ -15,7 +17,7 @@ export default function ClipEditor({draft,onClose,onSaved}:{draft:Row;onClose:()
   function applyStyle(value:string){setStyle(value);setPlan({...plan,framing:'fit',subtitle_style:value==='gaming'?'gaming':'bold',scenes:plan.scenes.map((s:Row)=>({...s,effect:value==='gaming'?'contrast':'none',transition:value==='cinematic'?'fade':'cut',zoom:1,zoom_end:null,shake:0}))});}
   function patchMeta(platform:string,key:string,value:any){const block=metadata[platform];setMetadata({...metadata,[platform]:{...block,generation_status:'manual',variants:block.variants.map((v:Row,i:number)=>i===block.recommended_index?{...v,[key]:value}:v)}});}
   if(advanced)return <DraftEditor draft={draft} onClose={()=>setAdvanced(false)} onSaved={onSaved}/>;
-  return <div className="modal-backdrop"><div className="modal form-body studio simple-clip-editor" role="dialog" aria-modal="true" aria-label="Edit clip"><div className="button-row"><h2>Edit clip · v{draft.current_version}</h2><button className="button secondary" onClick={onClose}>Close</button></div>{error&&<p role="alert">{error}</p>}<video src={draft.preview_url} controls playsInline/>
+  return <div className="modal-backdrop"><div className="modal form-body studio simple-clip-editor" role="dialog" aria-modal="true" aria-label="Edit clip"><div className="button-row"><h2>Edit clip · v{draft.current_version}</h2><button className="button secondary" onClick={onClose}>Close</button></div>{error&&<p role="alert">{error}</p>}<RemotionPreview clip={draft} plan={plan}/>
     <label>On-video headline<input value={plan.hook} onChange={e=>setPlan({...plan,hook:e.target.value,show_hook:!!e.target.value.trim()})}/></label><label>Editing style<select value={style} onChange={e=>applyStyle(e.target.value)}><option value="">Keep current style</option><option value="opus">Opus-Style Gaming</option><option value="gaming">Dynamic Gaming</option><option value="cinematic">Cinematic Gaming</option></select></label>
     <label>Additional on-video text<textarea value={plan.text_overlays?.[0]?.text||''} onChange={e=>setPlan({...plan,text_overlays:e.target.value?[{start:0,end:Math.min(draft.media_info.duration,plan.end-plan.start),text:e.target.value}]:[]})}/></label>
     <details><summary>Adjust clip timing</summary><label>Output frame rate<select value={plan.output_fps||30} onChange={e=>setPlan({...plan,output_fps:Number(e.target.value)})}><option value={30}>30 FPS</option><option value={60}>60 FPS</option></select></label><p>Changing the source range rebuilds the selected shot and automatic captions for that range.</p><label>Start (source seconds)<input type="number" step=".1" min={0} value={plan.start} onChange={e=>setBounds(+e.target.value,plan.end)}/></label><label>End (source seconds)<input type="number" step=".1" value={plan.end} onChange={e=>setBounds(plan.start,+e.target.value)}/></label></details>

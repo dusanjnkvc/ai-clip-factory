@@ -53,6 +53,7 @@ class ProjectInput(BaseModel):
     processing_mode: str=Field(default='balanced',pattern='^(fast|balanced|quality)$')
     editing_profile: str=Field(default='opus',pattern='^(opus|automatic|gaming|cinematic|clean|reference)$')
     destination: str=Field(default='both',pattern='^(both|youtube|tiktok)$')
+    render_engine: str=Field(default='ffmpeg',pattern='^(ffmpeg|remotion)$')
     framing: str=Field(default='fit',pattern='^(fit|crop)$')
     output_preset: str=Field(default='portrait_1080',pattern='^(portrait_1080|portrait_720|square_1080|landscape_1080)$')
 
@@ -333,6 +334,21 @@ class DraftEdit(BaseModel):
     plan: dict | None=None
     metadata: dict | None=None
     restore_version: int | None=Field(default=None,ge=1)
+    render_engine: str=Field(default='remotion',pattern='^(ffmpeg|remotion)$')
+
+@router.get('/drafts/{clip_id}/remotion')
+def remotion_preview(clip_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    clip=owner(db,RenderedClip,clip_id,user)
+    if not clip.media_info.get('remotion_base_key'):return None
+    return {**clip.media_info['remotion_props'],'videoUrl':f'/api/studio/drafts/{clip.id}/remotion-base'}
+
+@router.get('/drafts/{clip_id}/remotion-base')
+def remotion_base(clip_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    from .storage import local_path
+    clip=owner(db,RenderedClip,clip_id,user)
+    key=clip.media_info.get('remotion_base_key')
+    if not key:raise HTTPException(404,'This older clip needs a Remotion render before a live composition preview is available.')
+    return FileResponse(local_path(key),media_type='video/mp4')
 
 
 @router.post('/drafts/{clip_id}/edit')
@@ -356,6 +372,7 @@ def edit_draft(clip_id: str,body: DraftEdit,user: User=Depends(current_user),db:
     current=db.get(EditingPlan,clip.editing_plan_id).plan
     if plan is not None and (plan!=current or body.restore_version):
         result=regenerate_clip(clip.id,RegenerateRequest(plan=plan),user,db)
+        job=db.get(ProcessingJob,result['id']);job.payload={**job.payload,'options':{**job.payload.get('options',{}),'render_engine':body.render_engine},**({'processing_provider':'local_ai'} if body.render_engine=='remotion' else {})};db.commit()
         if metadata is not None:
             job=db.get(ProcessingJob,result['id']);job.payload={**job.payload,'metadata':metadata};db.commit()
         return {'action':'render_queued','job':result}

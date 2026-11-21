@@ -134,7 +134,7 @@ def test_manual_metadata_preserves_user_text_and_required_campaign_text():
     for platform in metadata.values():
         chosen = platform["variants"][platform["recommended_index"]]
         assert chosen["title"] == "My exact title"
-        assert chosen["description"] == "User-authored description.\n\n@brand\n\nPaid partnership"
+        assert chosen["description"] == "#campaign @brand\n\nUser-authored description.\n\nPaid partnership"
         assert chosen["hashtags"] == ["#campaign", "#owned"]
         assert chosen["score"] == 0
         assert "Not AI generated" in chosen["reasoning"]

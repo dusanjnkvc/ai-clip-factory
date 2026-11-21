@@ -11,7 +11,7 @@ import ts from "typescript";
 const temporary = await mkdtemp(path.join(tmpdir(), "acf-browser-api-tests-"));
 await mkdir(path.join(temporary, "creative"));
 after(() => rm(temporary, { recursive: true, force: true }));
-const names = ["browser-api", "browser-rules", ...["types", "styles", "compliance", "director", "publishing", "index"].map(name => `creative/${name}`)];
+const names = ["browser-api", "browser-rules", "browser-pdf", ...["types", "styles", "compliance", "director", "publishing", "index"].map(name => `creative/${name}`)];
 for (const name of names) {
   const source = await readFile(new URL(`../lib/${name}.ts`, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
@@ -53,6 +53,7 @@ export async function renderBrowserClip(blob, plan, cues, mode, progress, source
   return {blob:new Blob(["encoded-test-boundary"],{type:"video/mp4"}),media_info:{duration:plan.scenes.reduce((sum,scene)=>sum+scene.end-scene.start,0),width:plan.output_width||1080,height:plan.output_height||1920,codec:"h264",has_audio:true,decode_verified:true,subtitle_synchronized:true}};
 }
 `);
+await writeFile(path.join(temporary, "browser-rendering.mjs"), `export {renderBrowserClip as renderClipForBrowser} from './browser-media.mjs';`);
 const { browserApi, browserDownload } = await import(pathToFileURL(path.join(temporary, "browser-api.mjs")));
 const db = await import(pathToFileURL(path.join(temporary, "browser-db.mjs")));
 const media = await import(pathToFileURL(path.join(temporary, "browser-media.mjs")));
@@ -162,4 +163,14 @@ test("export rechecks actual edited plan fields before starting a file download"
   clip.plan.creative_concept.caption_settings={...clip.plan.creative_concept.caption_settings,font_size:64};
   await db.setRecord("clips",clip);
   await assert.rejects(browserDownload(`/clips/${clip.id}/download`),/Caption size/);
+});
+
+
+test('uploaded text rules are extracted with filename evidence and render requirements',async()=>{
+  const campaign=await browserApi('/campaigns',{method:'POST',body:JSON.stringify({name:'Document rules',brief:''})});
+  const form=new FormData();form.append('file',new File(['Platforms: YouTube\nRequired hashtags: #First #Second\nRequired mentions: @creator\nRequired on-screen text: EXACT WORDING'],'rules.txt',{type:'text/plain'}));
+  const updated=await browserApi('/campaigns/'+campaign.id+'/attachments',{method:'POST',body:form});
+  assert.deepEqual(updated.rules.required_mentions,['@creator']);
+  assert.deepEqual(updated.rules.required_on_video_text,['EXACT WORDING']);
+  assert.equal(updated.rules.evidence.find(e=>e.field==='required_mentions').source,'rules.txt');
 });

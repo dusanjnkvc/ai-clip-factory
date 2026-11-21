@@ -192,7 +192,18 @@ class LocalAutoPipelineService(PipelineService):
     def render_clip(self,*args,**kwargs):
         if self.cancel.is_set(): raise InferenceCancelled('AUTO CREATE cancelled; original source preserved.')
         self.progress('Rendering the edited draft with native FFmpeg',76)
-        result=super().render_clip(*args,**kwargs)
+        if self.options.get('render_engine')=='remotion':
+            import copy
+            from pathlib import Path
+            from .remotion_render import render_remotion
+            source,plan,transcript,output=args[:4]
+            clean=copy.deepcopy(plan);clean.update(show_hook=False,subtitles_enabled=False,required_on_video_text=[],text_overlays=[])
+            base=Path(output).with_name(Path(output).stem+'-base.mp4')
+            result=super().render_clip(source,clean,transcript,base,**kwargs)
+            self.progress('Remotion is editing captions, headlines and required campaign text',82)
+            final=render_remotion(base,plan,transcript,output)
+            result={**result,**final,'subtitle_synchronized':bool(final['remotion_props']['captions']),'subtitle_timing':'cue' if final['remotion_props']['captions'] else 'none','remotion_base_path':str(base)}
+        else:result=super().render_clip(*args,**kwargs)
         self.last_render_info=result
         if self.cancel.is_set(): raise InferenceCancelled('AUTO CREATE cancelled; original source preserved.')
         return result

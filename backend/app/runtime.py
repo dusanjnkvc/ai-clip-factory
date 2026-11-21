@@ -10,7 +10,8 @@ def free_mode() -> bool:
 
 def social_enabled() -> bool:
     # Independent of paid inference. Disabled until the operator opts in.
-    return not free_mode() or os.getenv('SOCIAL_INTEGRATIONS_ENABLED','false').lower()=='true'
+    from .services.social_settings import value
+    return not free_mode() or value('SOCIAL_INTEGRATIONS_ENABLED','false').lower()=='true'
 
 
 def local_no_auth() -> bool:

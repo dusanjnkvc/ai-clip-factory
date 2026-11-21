@@ -3,8 +3,9 @@
 /** Same API shape as the Python app, using this browser's own storage and CPU. */
 import { strToU8, zipSync } from "fflate";
 import { audit, claimQueuedJob, getBlob, getRecord, listRecords, mediaUrl, modifyRecord, putBlob, recordId, setRecord, timestamp, type BrowserRow } from "./browser-db";
-import { compliance, extractRules, manualMetadata, manualPlan, parseSubtitles, validateMetadata, validatePlan, validateRules, type CaptionCue } from "./browser-rules";
-import { inspectVideo, renderBrowserClip } from "./browser-media";
+import { compliance, extractRules, manualMetadata, manualPlan, parseSubtitles, validateMetadata, validatePlan, validateRules,enforceCampaignMetadata, type CaptionCue } from "./browser-rules";
+import { inspectVideo } from "./browser-media";
+import {renderClipForBrowser} from './browser-rendering';
 
 const LOCAL_USER = { id: "browser-local-owner", name: "Local", email: "", local_workspace: true };
 const SOURCE_LIMIT = 150 * 1024 * 1024;
@@ -16,7 +17,7 @@ const runnerId = (() => {
 })();
 
 function configuration(): BrowserRow {
-  return { free_mode: true, local_no_auth: true, browser_mode: true, processing_provider: "browser_manual", external_calls_enabled: false, ai: false, ffmpeg: true, storage: "browser_indexeddb", youtube: false, ai_model: null, transcription_model: null, max_upload_mb: 150, max_clip_seconds: 180, monthly_spend_limit_usd: 0, max_job_cost_usd: 0, retention_days: null, publishing: { youtube: "manual_package", tiktok: "manual_package", instagram: "manual_package", content_rewards: "manual_submission" }, budget_note: "No provider, storage subscription, or rendering service is contacted. This browser supplies CPU and local site storage. Keep the tab open while rendering." };
+  return { free_mode: true, local_no_auth: true, browser_mode: true, processing_provider: "browser_manual", external_calls_enabled: false, ai: false, ffmpeg: true, storage: "browser_indexeddb", youtube: false, ai_model: null, transcription_model: null, max_upload_mb: 150, max_clip_seconds: 180, monthly_spend_limit_usd: 0, max_job_cost_usd: 0, retention_days: null, publishing: { youtube: "manual_package", tiktok: "manual_package", instagram: "manual_package", content_rewards: "manual_submission" }, budget_note: "No paid AI, storage subscription or rendering service is required. This browser supplies processing and site storage. Remotion sends render-usage telemetry; video files stay on your device until you choose to upload them. Keep the tab open while rendering." };
 }
 
 async function initialize(): Promise<void> {
@@ -57,6 +58,12 @@ function validateUrl(value: unknown, platform?: string): string {
     if (!domains[platform]?.includes(url.hostname) || !url.pathname.replace(/\//g, "")) throw new Error("Use a published post URL on the selected official platform.");
   }
   return url.href;
+}
+
+function documentRules(brief:string,name:string,attachments:BrowserRow[]){
+  const rules=extractRules([brief,...attachments.map(a=>a.extracted_text||'')].join('\n'),name);
+  rules.evidence=rules.evidence.map((e:BrowserRow)=>({...e,source:brief.includes(e.quote)?'brief':attachments.find(a=>a.extracted_text?.includes(e.quote))?.filename||'combined documents'}));
+  return rules;
 }
 
 async function clipJson(clip: BrowserRow): Promise<BrowserRow> {
@@ -118,8 +125,10 @@ async function renderJob(job: BrowserRow): Promise<void> {
       const item=await required('sources',id);
       sourceFiles[id]={blob:await getBlob(item.storage_key),cues:(await getRecord('subtitles',id))?.cues||[]};
     }
+    plan.required_on_video_text=[...(job.rules_snapshot.required_on_video_text||[])];
     const metadata = job.payload.metadata || manualMetadata(plan, job.rules_snapshot);
-    const result = await renderBrowserClip(await getBlob(source.storage_key), {...plan,source_id:source.id}, cues, job.mode, (stage, progress) => updateJob(job.id, { stage, progress }).then(() => undefined),sourceFiles);
+    for(const block of Object.values(metadata) as BrowserRow[])block.variants=block.variants.map((v:BrowserRow)=>enforceCampaignMetadata(v,job.rules_snapshot));
+    const result = await renderClipForBrowser(await getBlob(source.storage_key), {...plan,source_id:source.id}, cues, job.mode, (stage, progress) => updateJob(job.id, { stage, progress }).then(() => undefined),sourceFiles);
     let clip: BrowserRow;
     if (job.payload.clip_id) {
       clip = await required("clips", job.payload.clip_id);
@@ -128,10 +137,11 @@ async function renderJob(job: BrowserRow): Promise<void> {
     } else clip = { id: recordId(), created_at: timestamp(), current_version: 1, versions: [] };
     const storageKey = `clips/${clip.id}/v${clip.current_version}.mp4`;
     await putBlob(storageKey, result.blob);
+    if('baseBlob' in result&&result.baseBlob){const key=`clips/${clip.id}/v${clip.current_version}-base.mp4`;await putBlob(key,result.baseBlob);result.media_info.remotion_base_key=key;}
     const checks = compliance(plan, metadata, job.rules_snapshot, result.media_info, source.rights_confirmed);
     clip = { ...clip, job_id: job.id, source_id: source.id, campaign_id: campaign.id, title: plan.title, storage_key: storageKey, media_info: result.media_info, metadata_json: metadata, edit_dna: plan.edit_dna, plan, rules_snapshot: job.rules_snapshot, compliance: checks, status: checks.status === "PASS" ? "ready" : "review", draft_approved: false, generation_method: plan.generation_method || "manual_local", versions: [...clip.versions, { id: recordId(), version: clip.current_version, created_at: timestamp(), plan, metadata_json: metadata, storage_key: storageKey }] };
     await setRecord("clips", clip);
-    await audit("clip.rendered", clip.id, { renderer: "ffmpeg_wasm_single_thread", version: clip.current_version, compliance: checks.status });
+    await audit("clip.rendered", clip.id, { renderer: result.media_info.renderer||'ffmpeg_wasm_single_thread', version: clip.current_version, compliance: checks.status });
     await updateJob(job.id, { status: "completed", stage: "Clip rendered locally; review the actual video and campaign checks", progress: 100, completed_clips: 1, completed_at: timestamp(), first_clip_seconds: (performance.now() - started) / 1000, error: null });
   } catch (failure) {
     await updateJob(job.id, { status: "failed", stage: "Local rendering stopped; source preserved", error: failure instanceof Error ? failure.message : String(failure) });
@@ -230,7 +240,12 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     }
     const campaign = await required("campaigns", parts[1]);
     if (parts[2] === "analyze" && method === "POST") {
-      const rules = extractRules(campaign.brief, campaign.name); const updated = { ...campaign, rules, evidence: rules.evidence, review_required: true, status: "review", analysis_error: null, rule_versions: [...campaign.rule_versions, { version: campaign.rule_versions.length + 1, rules, created_at: timestamp() }] };
+      const attachments=[];
+      for(const attachment of campaign.attachments){
+        if(!attachment.extracted_text&&/\.(pdf|txt)$/i.test(attachment.filename)){const {readRulesDocument}=await import('./browser-pdf');attachments.push({...attachment,extracted_text:await readRulesDocument(new File([await getBlob(attachment.storage_key)],attachment.filename))});}
+        else attachments.push(attachment);
+      }
+      const rules = documentRules(campaign.brief,campaign.name,attachments); const updated = { ...campaign, attachments,rules, evidence: rules.evidence, review_required: true, status: "review", analysis_error: null, rule_versions: [...campaign.rule_versions, { version: campaign.rule_versions.length + 1, rules, created_at: timestamp() }] };
       await setRecord("campaigns", updated); return updated;
     }
     if (parts[2] === "rules" && method === "PATCH") {
@@ -240,9 +255,14 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
       await setRecord("campaigns", updated); await audit("campaign.rules_reviewed", campaign.id, { note: values.note }); return updated;
     }
     if (parts[2] === "attachments" && method === "POST") {
-      const { file } = uploaded(options); if (file.size > 15 * 1024 * 1024 || !/\.(pdf|png|jpe?g)$/i.test(file.name)) throw new Error("Campaign evidence supports PDF, PNG or JPEG files up to 15 MB.");
+      const { file } = uploaded(options); if (file.size > 15 * 1024 * 1024 || !/\.(pdf|txt|png|jpe?g)$/i.test(file.name)) throw new Error("Campaign evidence supports PDF, TXT, PNG or JPEG files up to 15 MB.");
+      let extracted='';
+      if(/\.(pdf|txt)$/i.test(file.name)){const {readRulesDocument}=await import('./browser-pdf');extracted=await readRulesDocument(file);}
       const key = `campaigns/${campaign.id}/${recordId()}`; await putBlob(key, file);
-      const updated = { ...campaign, attachments: [...campaign.attachments, { filename: file.name, storage_key: key, size_bytes: file.size }], review_required: true, status: "review", rules: { ...campaign.rules, uncertainties: [...campaign.rules.uncertainties, "Read the attached evidence and enter its requirements manually. Browser mode does not perform PDF extraction or image OCR."] } };
+      const attachments=[...campaign.attachments,{filename:file.name,storage_key:key,size_bytes:file.size,extracted_text:extracted}];
+      const rules=documentRules(campaign.brief,campaign.name,attachments);
+      if(!extracted)rules.uncertainties.push('Read this image and paste any mandatory wording; image OCR is unavailable.');
+      const updated = { ...campaign, attachments, review_required: true, status: "review", rules,evidence:rules.evidence };
       await setRecord("campaigns", updated); return updated;
     }
   }
@@ -278,15 +298,17 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     if (parts.length === 1 && method === "GET") return Promise.all((await listRecords("clips")).map(clipJson));
     const clip = await required("clips", parts[1]);
     if (parts.length === 2 && method === "GET") return clipJson(clip);
+    if(parts[2]==='remotion'&&method==='GET')return clip.media_info.remotion_base_key?{...clip.media_info.remotion_props,videoUrl:await mediaUrl(clip.media_info.remotion_base_key)}:null;
     if (["download", "video", "package"].includes(parts[2])) throw new Error("Use this clip’s download button to save its local browser file.");
     if (parts[2] === "metadata" && method === "PATCH") {
-      const metadata = validateMetadata(body(options).metadata); const source = await required("sources", clip.source_id);
+      const raw=body(options).metadata;for(const block of Object.values(raw) as BrowserRow[])block.variants=block.variants.map((v:BrowserRow)=>enforceCampaignMetadata(v,clip.rules_snapshot));
+      const metadata = validateMetadata(raw); const source = await required("sources", clip.source_id);
       const next: BrowserRow = { ...clip, metadata_json: metadata, current_version: clip.current_version + 1, draft_approved: false, compliance: compliance(clip.plan, metadata, clip.rules_snapshot, clip.media_info, source.rights_confirmed), versions: [...clip.versions, { id: recordId(), version: clip.current_version + 1, created_at: timestamp(), plan: clip.plan, metadata_json: metadata, storage_key: clip.storage_key }] };
       next.status = next.compliance.status === "PASS" ? "ready" : "review"; await setRecord("clips", next); await audit("clip.metadata_updated", clip.id); return clipJson(next);
     }
     if (parts[2] === "review" && method === "POST") {
       const values = body(options); if (String(values.note || "").trim().length < 8) throw new Error("A meaningful review evidence note is required.");
-      const allowed = ["branding", "content_restrictions", "audio_restrictions", "source_material", "campaign_uncertainties", "campaign_contradictions", "platforms", "approval_requirement", "disclosures", "campaign_evidence","creative_context","manual_editing","original_footage","music_restrictions","ai_voice_restrictions","paid_promotion","prohibited_footage","audience_restrictions"];
+      const allowed = ["branding", "content_restrictions", "audio_restrictions", "source_material", "campaign_uncertainties", "campaign_contradictions", "platforms", "approval_requirement", "disclosures", "campaign_evidence","creative_context","manual_editing","original_footage","music_restrictions","ai_voice_restrictions","paid_promotion","prohibited_footage","audience_restrictions","on_video_text"];
       const evidence: BrowserRow = {};
       for (const [key, value] of Object.entries(values.evidence || {}) as [string, BrowserRow][]) { if (!allowed.includes(key) || value?.confirmed !== true || String(value?.note || "").trim().length < 8) throw new Error("Each semantic check needs confirmation and at least eight characters of evidence."); evidence[key] = { confirmed: true, note: value.note, reviewed_by: LOCAL_USER.id, reviewed_at: timestamp() }; }
       const source = await required("sources", clip.source_id), result = compliance(clip.plan, clip.metadata_json, clip.rules_snapshot, clip.media_info, source.rights_confirmed, evidence, values.draft_approved === true);

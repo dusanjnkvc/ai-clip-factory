@@ -123,3 +123,21 @@ def test_approval_required_after_version_change(environment,monkeypatch):
         row.current_version=2;db.commit()
         with pytest.raises(Exception,match='Approve the current'):
             social.require_approved_draft(db,row)
+
+
+def test_setup_wizard_encrypts_app_secrets_and_enables_official_connect(environment,monkeypatch,tmp_path):
+    from app.services.social_settings import directory
+    client,factory,config=environment;register(client)
+    monkeypatch.setenv('MEDIA_ROOT',str(tmp_path/'owned-media'))
+    for key in ['YOUTUBE_CLIENT_ID','YOUTUBE_CLIENT_SECRET','TOKEN_ENCRYPTION_KEY']:monkeypatch.delenv(key,raising=False)
+    monkeypatch.setenv('FREE_MODE','true');monkeypatch.setenv('SOCIAL_INTEGRATIONS_ENABLED','false')
+    response=client.post('/api/social/setup',json={'platform':'youtube','client_id':'controlled.apps.googleusercontent.com','client_secret':'controlled-secret-do-not-expose','redirect_uri':'http://localhost:3000/api/accounts/youtube/callback'})
+    assert response.status_code==200,response.text
+    assert response.json()['youtube_configured'] and 'controlled-secret' not in response.text
+    encoded=(directory()/'app-settings.enc').read_bytes()
+    assert b'controlled-secret' not in encoded
+    result=client.post('/api/accounts/youtube/connect')
+    assert result.status_code==200 and 'accounts.google.com' in result.json()['url']
+    assert 'controlled-secret' not in result.text
+    monkeypatch.setenv('APP_ENV','production')
+    assert client.post('/api/social/setup',json={'platform':'youtube','client_id':'another-controlled','redirect_uri':'http://localhost:3000/callback'}).status_code==403

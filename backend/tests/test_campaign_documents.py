@@ -46,7 +46,9 @@ def test_campaign_first_tags_exact_wording_and_noncompliance():
     enforced=enforce_metadata(variant,rules)
     assert enforced['hashtags']==['#Warzone','#CallOfDuty','#BrandCampaign','#Gaming','#FPS']
     assert enforced['title']=='Exact Campaign' and 'Paid partnership' in enforced['description']
-    assert enforced['description'].index('#Warzone')<enforced['description'].index('#Gaming')
+    from app.services.publication_text import publication_text
+    final=publication_text(enforced,'youtube')
+    assert final.startswith('#Warzone #CallOfDuty #BrandCampaign') and final.index('#Warzone')<final.index('#Gaming')
     metadata=sample_metadata();metadata['youtube']['variants'][0]=enforced
     render={'width':1080,'height':1920,'duration':2,'codec':'h264','has_audio':True,'decode_verified':True}
     result=check_compliance(sample_plan(),metadata,rules,True,render)
@@ -54,3 +56,14 @@ def test_campaign_first_tags_exact_wording_and_noncompliance():
     metadata['youtube']['variants'][0]['hashtags'].reverse()
     result=check_compliance(sample_plan(),metadata,rules,True,render)
     assert result['status']=='FAIL'
+
+
+def test_required_mentions_and_hashtags_lead_without_replacing_manual_text():
+    from app.services.campaign_requirements import enforce_metadata
+    rules={'required_hashtags':['#First','#Second'],'required_mentions':['@creator','@brand']}
+    variant=sample_metadata()['youtube']['variants'][0]
+    variant.update(description='My exact manual words. #Optional',caption='My exact manual words.',hashtags=['#Optional','#First'])
+    fixed=enforce_metadata(variant,rules)
+    assert fixed['description'].startswith('#First #Second @creator @brand\n\nMy exact manual words. #Optional')
+    assert fixed['hashtags']==['#First','#Second','#Optional']
+    assert enforce_metadata(fixed,rules)==fixed

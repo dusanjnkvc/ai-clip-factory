@@ -166,7 +166,7 @@ test("metadata stays deterministic and human-authored without claiming an AI sco
   for (const platform of ["youtube", "tiktok", "instagram"]) {
     const selected = first[platform].variants[first[platform].recommended_index];
     assert.equal(selected.title, "My exact title");
-    assert.ok(selected.description.startsWith("My exact description."));
+    assert.ok(selected.description.startsWith("#ad @campaign\n\nMy exact description."));
     assert.ok(selected.description.includes("@campaign"));
     assert.ok(selected.description.includes("Paid partnership."));
     assert.ok(selected.hashtags.includes("#ad"));
@@ -227,4 +227,17 @@ test("wrong resolution, wrong codec, missing audio, or an unverified decode bloc
     assert.equal(check(result, "video_format").status, "FAIL");
     assert.equal(result.publish_ready, false);
   }
+});
+
+
+test('rules text supplies required mentions and exact visible wording, with mandatory metadata first',()=>{
+  const rules=extractRules('Platforms: YouTube, TikTok\nRequired hashtags: #First #Second\nRequired mentions: @creator @brand\nRequired on-screen text: EXACT CAMPAIGN WORDING','Rules fixture');
+  assert.deepEqual(rules.required_on_video_text,['EXACT CAMPAIGN WORDING']);
+  const clip=plan({title:'Actual source',description:'My retained words. #Optional',hashtags:['#Optional','#First']},rules);
+  assert.deepEqual(clip.required_on_video_text,['EXACT CAMPAIGN WORDING']);
+  const meta=manualMetadata(clip,rules).youtube.variants[0];
+  assert.deepEqual(meta.hashtags,['#First','#Second','#Optional']);
+  assert.ok(meta.description.startsWith('#First #Second @creator @brand\n\nMy retained words. #Optional'));
+  const result=compliance({...clip,required_on_video_text:[]},manualMetadata(clip,rules),rules,({duration:20,width:1080,height:1920,codec:"h264",has_audio:true,decode_verified:true,subtitle_synchronized:true}),true);
+  assert.equal(result.checks.find(c=>c.rule==='on_video_text').status,'FAIL');
 });

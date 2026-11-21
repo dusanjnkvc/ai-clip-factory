@@ -511,11 +511,14 @@ def update_metadata(clip_id: str,body: ClipMetadataUpdate,user: User=Depends(cur
     if len(json.dumps(body.metadata))>100000:
         raise HTTPException(422,'Metadata is too large.')
     from .services.schemas import Metadata
+    from .services.campaign_requirements import enforce_metadata
+    plan=db.get(EditingPlan,clip.editing_plan_id)
     try:
-        validated = Metadata.model_validate(body.metadata).model_dump()
+        supplied=Metadata.model_validate(body.metadata).model_dump()
+        validated = Metadata.model_validate({p:{**block,'variants':[enforce_metadata(v,plan.rules_snapshot) for v in block['variants']]} for p,block in supplied.items()}).model_dump()
     except ValueError:
         raise HTTPException(422,'Metadata must contain three complete validated variants for each platform.')
-    plan=db.get(EditingPlan,clip.editing_plan_id)
+    body.metadata=validated
     clip.metadata_json=validated
     chosen=validated['youtube']
     clip.title=chosen['variants'][chosen['recommended_index']]['title']
@@ -628,8 +631,9 @@ def regenerate_clip(clip_id: str,body: RegenerateRequest,user: User=Depends(curr
         job.payload={**job.payload,'plan':original.plan}
     if not body.optimize_metadata:
         job.payload={**job.payload,'metadata':clip.metadata_json}
-    if db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)):
-        job.payload={**job.payload,'processing_provider':'local_ai','options':{'studio':True}}
+    has_evaluation=bool(db.scalar(select(DraftEvaluation.id).where(DraftEvaluation.clip_id==clip.id)))
+    if has_evaluation or clip.media_info.get('renderer')=='remotion':
+        job.payload={**job.payload,'processing_provider':'local_ai','options':{'studio':has_evaluation,'render_engine':'remotion' if clip.media_info.get('renderer')=='remotion' else 'ffmpeg'}}
     db.commit()
     return obj(job)
 
@@ -934,6 +938,7 @@ class AutoCreate(BaseModel):
     processing_mode: Literal['fast','balanced','quality'] = 'balanced'
     editing_profile: Literal['opus','automatic','gaming','cinematic','clean','reference'] = 'automatic'
     destination: Literal['both','youtube','tiktok'] = 'both'
+    render_engine: Literal['ffmpeg','remotion'] = 'ffmpeg'
     framing: Literal['fit','crop'] = 'fit'
     output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
     reference_profile: dict | None = None

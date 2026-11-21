@@ -134,6 +134,7 @@ def process_job(job_id):
                 else:
                     progress(job_id, f'Rendering clip {index + 1} of {len(existing)} · metadata in parallel', 25 + int(index / max(1, len(existing)) * 65))
                 output = work / f'{plan_row.id}.mp4'
+                plan_row.plan={**plan_row.plan,'required_on_video_text':rules.get('required_on_video_text',[])}
                 if auto:
                     # Finish inference and release its model before CPU rendering.
                     metadata = job.payload['metadata'] if job.payload.get('metadata') else service.generate_metadata(plan_row.plan, rules)
@@ -150,6 +151,8 @@ def process_job(job_id):
                         render = service.render_clip(source_path, plan_row.plan, transcript, output, mode=job.mode)
                         metadata = metadata_future.result()
                 record_usage(db, service, job.user_id, job.id)
+                from .services.campaign_requirements import enforce_metadata
+                metadata={p:{**block,'variants':[enforce_metadata(v,rules) for v in block['variants']]} for p,block in metadata.items()}
                 evaluation=service.evaluate_render(output,plan_row.plan,metadata) if auto and options.get('studio') else None
                 if auto and options.get('studio') and not job.payload.get('metadata') and evaluation:
                     render,evaluation=service.polish_render(source_path,plan_row.plan,transcript,output,render,metadata,evaluation,job.mode)
@@ -169,7 +172,7 @@ def process_job(job_id):
                     clip.current_version += 1
                     clip.editing_plan_id=plan_row.id
                     clip.title=str(plan_row.plan.get('title') or plan_row.plan.get('hook') or 'Untitled clip')[:300]
-                    clip.media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path'}}
+                    clip.media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path','remotion_base_path'}}
                     clip.metadata_json=metadata
                     clip.edit_dna=plan_row.plan.get('edit_dna',{})
                     clip.compliance=compliance
@@ -177,12 +180,15 @@ def process_job(job_id):
                     clip.draft_approved=False
                 else:
                     clip = RenderedClip(user_id=job.user_id, job_id=job.id, campaign_id=job.campaign_id, source_id=source.id, editing_plan_id=plan_row.id,
-                        title=str(plan_row.plan.get('title') or plan_row.plan.get('hook') or 'Untitled clip')[:300], storage_key='pending', media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path'}}, metadata_json=metadata,
+                        title=str(plan_row.plan.get('title') or plan_row.plan.get('hook') or 'Untitled clip')[:300], storage_key='pending', media_info={k:v for k,v in render.items() if k not in {'path','subtitles_path','remotion_base_path'}}, metadata_json=metadata,
                         edit_dna=plan_row.plan.get('edit_dna', {}), compliance=compliance, status='ready' if compliance.get('status') == 'PASS' else 'review')
                     db.add(clip)
                     db.flush()
                 key = f'{job.user_id}/clips/{clip.id}/v{clip.current_version}.mp4'
                 put_file(output, key)
+                if render.get('remotion_base_path'):
+                    base_key=f'{job.user_id}/clips/{clip.id}/v{clip.current_version}-base.mp4';put_file(render['remotion_base_path'],base_key)
+                    clip.media_info={**clip.media_info,'remotion_base_key':base_key}
                 clip.storage_key = key
                 if evaluation:
                     db.add(DraftEvaluation(clip_id=clip.id,version=clip.current_version,artifact_sha256=render['sha256'],evaluation=evaluation))

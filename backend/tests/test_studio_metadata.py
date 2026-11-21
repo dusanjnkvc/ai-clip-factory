@@ -20,7 +20,7 @@ def test_three_youtube_titles_and_platform_specific_text_preserve_campaign_order
     metadata=package['metadata']
     assert len(metadata['youtube']['title_candidates'])==3
     assert package['recommended']['title']=='Actual card detail 2'
-    assert metadata['tiktok']['variants'][0]['description'].startswith('tiktok')
+    assert metadata['tiktok']['variants'][0]['description'].startswith('#Mandatory\n\ntiktok')
     assert all(v['hashtags'][0]=='#Mandatory' for p in metadata.values() for v in p['variants'])
     assert len(package['hook_candidates'])==3
 

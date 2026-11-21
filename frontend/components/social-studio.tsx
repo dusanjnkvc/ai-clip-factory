@@ -1,6 +1,7 @@
 "use client";
 import {useEffect,useState} from 'react';
 import {api} from '@/lib/api';
+import AccountSetup from './account-setup';
 type Row=Record<string,any>;
 
 function MetricTrend({points,label}:{points:Row[];label:string}){
@@ -16,11 +17,11 @@ export function SocialConnections({notify}:{notify:(text:string)=>void}) {
   async function refresh(){const [a,c]=await Promise.all([api('/accounts'),api('/social/configuration')]);setAccounts(a);setConfig(c);}
   useEffect(()=>{refresh().catch(e=>setError(e.message));},[]);
   async function connect(platform:string){try{const r=await api(platform==='youtube'?'/accounts/youtube/connect':'/social/tiktok/connect',{method:'POST'});window.location.href=r.url;}catch(e){setError((e as Error).message);}}
-  return <section className="panel form-body studio" style={{padding:24}}><h2>Optional connected accounts</h2><p>Video creation stays local and works offline. Connections use official platform permissions. Every post needs your approval.</p>{error&&<p role="alert">{error}</p>}
+  return <><AccountSetup onSaved={refresh}/><section className="panel form-body studio" style={{padding:24}}><h2>Optional connected accounts</h2><p>Video creation stays local and works offline. Connections use official platform permissions. Every post needs your approval.</p>{error&&<p role="alert">{error}</p>}
     {!config.enabled&&<p>Social connections are disabled. Enable SOCIAL_INTEGRATIONS_ENABLED in your local configuration and add your developer app credentials to connect. Paid AI remains disabled.</p>}
     <div className="accounts-grid">{['youtube','tiktok'].map(platform=><article key={platform}><h3>{platform}</h3><p>{config[platform+'_configured']?'Developer app configured':'One-time developer app configuration required'}</p>{!config[platform+'_configured']&&<details><summary>Connection setup</summary><p>{platform==='youtube'?'Create a Google OAuth web client, enable YouTube Data and Analytics APIs, and register the exact callback below. Add your account as a test user when the consent screen is in testing.':'Register TikTok Login Kit and request the required approved posting and analytics scopes. TikTok needs a registered static HTTPS callback. Inbox delivery uses video.upload; Direct Post uses video.publish; follower counts need user.info.stats.'}</p><p>Callback: {config.redirects?.[platform]||'Not configured'}</p><p>Missing server configuration: {config.missing_configuration?.[platform]?.join(', ')||'Enable social connections in the local server configuration.'}</p><p>Keep secrets in your local server environment. Video creation stays free and works without social accounts.</p></details>}{accounts.filter(a=>a.platform===platform).map(a=><div key={a.id}><strong>{a.name}</strong><p>{a.status} · {a.external_id}</p><details><summary>Granted permissions</summary>{a.scopes.map((s:string)=><p key={s}>{s}</p>)}</details><button className="button secondary" onClick={()=>api(`/accounts/${a.id}`,{method:'DELETE'}).then(()=>{notify('Disconnected; local clips are preserved.');return refresh();}).catch(e=>setError(e.message))}>Disconnect</button></div>)}<button className="button primary" disabled={!config.enabled||!config[platform+'_configured']} onClick={()=>void connect(platform)}>{accounts.some(a=>a.platform===platform)?'Reconnect':'Connect'} {platform}</button></article>)}</div>
     <p>TikTok Direct Post needs its approved scope. Unaudited clients are restricted to private posting. Ready-to-upload exports remain available when API access is unavailable.</p>
-  </section>;
+  </section></>;
 }
 
 export function PublishDraft({draft,notify}:{draft:Row;notify:(text:string)=>void}) {

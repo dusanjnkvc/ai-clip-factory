@@ -33,7 +33,7 @@ export default function WorkspaceSettings({ config, freeMode, localNoAuth, aiRea
         <p>{freeMode ? "This mode uses the device you already have. It does not purchase API credits or require a paid cloud host. Local files and browser storage should be backed up before clearing data." : "Credentials remain on the server. Review spending controls and provider billing before enabling hosted processing."}</p>
         {localNoAuth ? <div className="info-line"><Settings2 size={15}/>Your workspace opens directly. No password or account is needed.</div> : user ? <button className="button secondary" onClick={signOut}><LogOut size={15}/>Sign out</button> : <button className="button secondary" onClick={signIn}>Sign in</button>}
       </div></section>
-      <div className="rights-card"><ShieldCheck size={22}/><h3>Your sources. Your rights.</h3><p>Use videos you own or have permission to edit and republish. Each upload keeps your authorization note.</p></div>
+      <p>Remotion is free for individuals and eligible small organizations. Its browser renderer sends usage telemetry; it does not upload your video. <a href="https://www.remotion.dev/pricing" target="_blank" rel="noreferrer">License terms</a></p><div className="rights-card"><ShieldCheck size={22}/><h3>Your sources. Your rights.</h3><p>Use videos you own or have permission to edit and republish. Each upload keeps your authorization note.</p></div>
     </div>
   </div>;
 }
