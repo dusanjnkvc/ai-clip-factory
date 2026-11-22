@@ -66,7 +66,17 @@ An independent native Remotion export of owned generated test footage included a
 
 The authorized source folder contains two silent store/reward screen recordings and a 151.67-second Warzone trailer. Sampled contact sheets show gameplay/cinematic character faces, with no streamer facecam in the inspected samples. A new survey measured 152 periodic activity samples; no recording-specific timestamps or detector rules were introduced. Positive streamer-facecam, kills, victories, funny reactions, word accuracy and long Twitch performance cannot be established from this set. The user explicitly allowed continuing other implementation when suitable footage is absent.
 
-A fresh three-clip branded automatic test uses the authorized trailer and the existing local model. Its initial redundant-inference run was cancelled through the app after exposing cache-upgrade inefficiency; the corrected retry reuses valid source observations and retains the original footage. Final outcome is recorded after it reaches a terminal state. GPU memory measurement was unavailable because Windows denied `nvidia-smi`; a zero measurement is not claimed.
+The three-clip branded automatic test completed successfully with the authorized trailer and the installed local model. Its initial redundant-inference run exposed cache-upgrade inefficiency; a later actual render exposed a string/path mismatch when saving the clean preview. Both were fixed, including a worker integration regression that persists three real decoded proxy files. The final retry reused validated source observations and persisted plans, preserving the original footage. It completed in **1,865.8 seconds**; this is a resumed processing measurement, not a cold full-analysis benchmark. GPU memory measurement was unavailable because Windows denied `nvidia-smi`; a zero measurement is not claimed.
+
+| Actual output | Source window (seconds) | Output duration | Verified format |
+|---|---|---|---|
+| Clip 1 | 11.578–19.578 | 8.11 s | 1080x1920 H.264/AAC, full decode |
+| Clip 2 | 24.883–32.883 | 8.11 s | 1080x1920 H.264/AAC, full decode |
+| Clip 3 | 35.644–43.644 | 8.00 s | 1080x1920 H.264/AAC, full decode |
+
+The windows are distinct and do not overlap. Each saved project retains the image/audio layers, exact `EDITOR ACCEPTANCE` wording, separate proposed YouTube/TikTok text, mandatory `#ClipFactoryTest #Gaming @ClipFactoryTest` prefix, and explained six-factor offline editorial scores. The outputs remain unapproved with genuine unresolved campaign review checks. These three outputs have no speech captions; this test does not establish ASR accuracy. A second complete decode and sampled-frame inspection verified the saved/exported files. Portable copies and project/metadata JSON were saved to the user's **Documents / AI Clip Factory Exports / Professional upgrade acceptance** folder; no footage was committed or published.
+
+GitHub [PR 2](https://github.com/dusanjnkvc/ai-clip-factory/pull/2) merged as `acf291c689e4c29e6d6d78ed6528df1bdee95d36`. The PR and main-branch checks passed for backend, frontend and both container builds. [Pages deployment 44999447967](https://github.com/dusanjnkvc/ai-clip-factory/actions/runs/44999447967) completed successfully. The public site returned HTTP200 with the new Automatic/Advanced mode markup. Local rendered-browser acceptance and its saved screenshot verify the editor; the final separate live-page visual check was stopped because browser safety could not confirm the active browser URL. No safety check was bypassed.
 
 ## Practical limits and remaining acceptance
 
@@ -85,4 +95,4 @@ A fresh three-clip branded automatic test uses the authorized trailer and the ex
 6. Metadata/scoring: automatic source-grounded proposals retained, required campaign text prioritized, six-factor default implemented; no guaranteed reach or invented live trends.
 7. Gallery: integrated Edit Clip, version review/approval and independent duplication. The browser gallery adds campaign groups, search, status filters, sorting and duplication. Bulk export remains limited to existing approved campaign/project package workflows.
 8. Publishing/analytics: official adapters retained; real account acceptance depends on owner developer apps and authorized accounts. Financial UI removed.
-9. Regression/build/deployment: final verification in progress; exact final results appended below.
+9. Regression/build/deployment: the checks and actual exports above pass; GitHub Pages is published. Remaining accuracy, social-account and long-stream acceptance limits are listed explicitly above.

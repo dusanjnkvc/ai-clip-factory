@@ -4,7 +4,7 @@
 
 Create Clips now contains **Automatic AI Mode** and **Advanced Manual Mode**. Open a generated clip with **Edit Clip** to adjust its timeline, captions, text, logos, video layers and audio. Drafts autosave without rerunning source AI. Save a visual design for reuse across automatic clips, or review/correct PDF and text campaign rules in the same tab. Video Library holds assets and designs; Settings holds local processing defaults. The original five tabs remain.
 
-Install/update native dependencies with `.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt -r backend/requirements-local-ai.txt` and keep the existing frontend dependencies/startup workflow. No paid AI key is required. The free online edition provides browser editing; automatic local model processing requires the local service. See [upgrade evidence and remaining limitations](docs/PROFESSIONAL_UPGRADE.md).
+Install/update native dependencies with `.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt -r backend/requirements-local-ai.txt` and keep the existing frontend dependencies/startup workflow. No paid AI key is required. The free online edition provides browser editing; automatic local model processing requires the local service. The upgrade is published, with 244 backend and 69 browser checks plus three real, distinct full-HD test exports. See [upgrade evidence and remaining limitations](docs/PROFESSIONAL_UPGRADE.md).
 
 ## Clip rules, Remotion and free online editing
 
