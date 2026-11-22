@@ -13,7 +13,9 @@ if ($Setup) {
 }
 $modelCache=Join-Path $projectRoot '.runtime/local-ultimate-media/models/faster-whisper'
 $downloadCode='from faster_whisper.utils import download_model; import sys; print(download_model("base",cache_dir=sys.argv[1],local_files_only=sys.argv[2]=="offline"))'
-$speech=& $python -c $downloadCode $modelCache $(if($Setup){'download'}else{'offline'})
+# Windows PowerShell 5 strips embedded quotes in native -c arguments. Send the
+# Python program over stdin so model names stay quoted on both PowerShell versions.
+$speech=$downloadCode | & $python - $modelCache $(if($Setup){'download'}else{'offline'})
 if ($LASTEXITCODE -ne 0) { throw 'Speech model missing. Run once with -Setup.' }
 $env:ACF_LOCAL_MODEL=$Model
 $env:ACF_SPEECH_MODEL=($speech | Select-Object -Last 1).Trim()
