@@ -1,5 +1,6 @@
 import pytest
 from app.services.url_import import validate_youtube_url
+from app.services.url_import import validate_public_video_url
 from app.services.media import PipelineError
 
 
@@ -11,6 +12,13 @@ def test_import_rejects_unapproved_destinations_and_credentials(value):
 def test_public_single_video_url_remains_exact():
     value='https://www.youtube.com/watch?v=abcdef12345'
     assert validate_youtube_url(value)==value
+
+@pytest.mark.parametrize('url',['https://www.twitch.tv/videos/123456','https://clips.twitch.tv/ExampleClip','https://kick.com/example/videos/12345678-abcd-ef12-3456-123456789abc'])
+def test_supported_recording_providers(url):assert validate_public_video_url(url)==url
+
+@pytest.mark.parametrize('url',['https://twitch.tv/example','https://kick.com/example','https://clips.twitch.tv.evil.test/Example','https://127.0.0.1/private','https://twitch.tv/videos/123#private'])
+def test_recording_validator_rejects_live_channels_and_arbitrary_hosts(url):
+    with pytest.raises(PipelineError):validate_public_video_url(url)
 
 
 def test_downloader_is_bounded_and_preserves_original_title(monkeypatch,tmp_path):

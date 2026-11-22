@@ -29,6 +29,8 @@ def test_actual_render_samples_score_components_and_metadata_changes(tmp_path):
 def test_score_weights_reject_invalid_and_normalize(monkeypatch):
     monkeypatch.setenv('VIRAL_SCORE_WEIGHTS','{"hook": 1}')
     with pytest.raises(PipelineError): weights()
+    monkeypatch.setenv('VIRAL_SCORE_WEIGHTS','{"hook":20,"entertainment":20,"editing":15,"headline":15,"visual_audio":10,"metadata":10,"audience":10}')
+    assert weights()['hook']==.2
 
 
 def test_actual_fit_content_crop_excludes_letterbox_editorial_regions():

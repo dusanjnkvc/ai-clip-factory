@@ -2,6 +2,7 @@
 import type {Caption} from '@remotion/captions';
 import {createTikTokStyleCaptions} from '@remotion/captions';
 import React, {useMemo} from 'react';
+import type {CaptionStyle} from '../lib/editor-project';
 import {
 	Interactive,
 	useCurrentFrame,
@@ -14,6 +15,7 @@ import {
 type BasicCaptionsProps = InteractiveTransformProps &
 	Pick<SequenceProps, 'width'> & {
 		readonly captions: Caption[];
+		readonly appearance?: CaptionStyle;
 		readonly combineTokensWithinMilliseconds?: number;
 	};
 
@@ -44,6 +46,7 @@ const BasicCaptionsContent: React.FC<BasicCaptionsProps> = ({
 	captions,
 	combineTokensWithinMilliseconds = defaultCombineTokensWithinMilliseconds,
 	style,
+	appearance,
 	width = defaultWidth,
 }) => {
 	const frame = useCurrentFrame();
@@ -78,17 +81,19 @@ const BasicCaptionsContent: React.FC<BasicCaptionsProps> = ({
 					style={{
 						backgroundColor: 'rgba(64, 64, 64, 0.75)',
 						color: style?.color ?? '#ffffff',
-						fontFamily: 'ClipFactoryCaption, Arial, sans-serif',
-						fontSize: style?.fontSize ?? 64,
-						fontWeight: 400,
-						lineHeight: 1.2,
+						fontFamily: appearance?.font_family && appearance.font_family!=='Noto Sans' ? appearance.font_family : 'ClipFactoryCaption, Arial, sans-serif',
+						fontSize: appearance ? appearance.size * Number(width) / 936 : style?.fontSize ?? 64,
+						fontWeight: appearance?.weight ?? 400,
+						lineHeight: appearance?.line_height ?? 1.2,
+						...(appearance ? {color:appearance.color,backgroundColor:appearance.background,opacity:appearance.opacity*(appearance.animation==='fade'?Math.min(1,(currentTimeMs-page.startMs)/100,(page.startMs+page.durationMs-currentTimeMs)/100):1),rotate:`${appearance.rotation}deg`,letterSpacing:appearance.letter_spacing,WebkitTextStroke:`${appearance.outline_width}px ${appearance.outline}`,paintOrder:'stroke fill',textTransform:appearance.uppercase?'uppercase' as const:'none' as const,scale:appearance.animation==='pop'?Math.min(1,.85+(currentTimeMs-page.startMs)/1000):1} : {}),
 						padding: '14px 22px',
-						textAlign: 'center',
+						textAlign: appearance?.align || 'center',
+						textShadow: appearance?.shadow===false ? 'none' : '0 3px 8px #000000B0',
 						textWrap: 'balance',
 						whiteSpace: 'pre-wrap',
 					}}
 				>
-					{page.text.trim()}
+					{appearance?.animation==='karaoke'?page.tokens.map((token,index)=><span key={index} style={{color:currentTimeMs>=token.fromMs&&currentTimeMs<token.toMs?appearance.highlight:appearance.color}}>{token.text}</span>):page.text.trim()}
 				</div>
 			) : null}
 		</div>

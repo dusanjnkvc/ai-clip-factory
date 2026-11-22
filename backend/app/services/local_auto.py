@@ -66,7 +66,12 @@ class LocalAutoPipelineService(PipelineService):
             if self.options.get('studio'):
                 plan['content_type']='gaming'
                 plan['framing']=self.options.get('framing','fit')
+                facecam=(self.analysis.get('visual_survey') or {}).get('facecam')
+                if facecam and plan['framing']=='fit':
+                    plan['framing']='facecam';plan['facecam']=facecam
+                    plan['semantic_notes'].append('A persistent corner-face measurement proposed a facecam layout. Review and adjust its crop in Advanced Manual Mode; this is not verified facecam classification.')
                 plan['output_preset']=self.options.get('output_preset','portrait_1080')
+                plan['output_fps']=self.options.get('output_fps',30)
                 plan['required_on_video_text']=rules.get('required_on_video_text',[])
                 profile=self.options.get('editing_profile','automatic')
                 if profile=='opus':
@@ -197,12 +202,12 @@ class LocalAutoPipelineService(PipelineService):
             from pathlib import Path
             from .remotion_render import render_remotion
             source,plan,transcript,output=args[:4]
-            clean=copy.deepcopy(plan);clean.update(show_hook=False,subtitles_enabled=False,required_on_video_text=[],text_overlays=[])
+            clean=copy.deepcopy(plan);clean.update(show_hook=False,subtitles_enabled=False,required_on_video_text=[],text_overlays=[],editor=None)
             base=Path(output).with_name(Path(output).stem+'-base.mp4')
             result=super().render_clip(source,clean,transcript,base,**kwargs)
             self.progress('Remotion is editing captions, headlines and required campaign text',82)
-            final=render_remotion(base,plan,transcript,output)
-            result={**result,**final,'subtitle_synchronized':bool(final['remotion_props']['captions']),'subtitle_timing':'cue' if final['remotion_props']['captions'] else 'none','remotion_base_path':str(base)}
+            final=render_remotion(base,plan,transcript,output,self.options.get('editor_asset_paths',{}))
+            result={**result,**final,'subtitle_synchronized':bool(final['remotion_props']['captions']),'subtitle_timing':('word' if transcript.get('words') and not plan.get('manual_captions') else 'cue') if final['remotion_props']['captions'] else 'none','remotion_base_path':str(base)}
         else:result=super().render_clip(*args,**kwargs)
         self.last_render_info=result
         if self.cancel.is_set(): raise InferenceCancelled('AUTO CREATE cancelled; original source preserved.')

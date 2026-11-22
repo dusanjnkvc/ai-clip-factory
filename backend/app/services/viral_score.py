@@ -7,7 +7,8 @@ from pydantic import Field
 from .local_analysis import Contract, sample_frames, detect_scenes
 from .media import probe_media, sha256_file, PipelineError,run_media,ffmpeg_binary,safe_input_options
 
-WEIGHTS={'hook':.20,'entertainment':.20,'editing':.15,'headline':.15,'visual_audio':.10,'metadata':.10,'audience':.10}
+WEIGHTS={'hook':.25,'entertainment':.20,'retention':.20,'editing':.15,'metadata':.10,'audience':.10}
+LEGACY_FACTORS={'hook','entertainment','editing','headline','visual_audio','metadata','audience'}
 
 
 class RenderReview(Contract):
@@ -32,8 +33,8 @@ class FrameReview(Contract):
 
 def weights():
     chosen=json.loads(os.getenv('VIRAL_SCORE_WEIGHTS','null')) or WEIGHTS
-    if set(chosen)!=set(WEIGHTS) or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in chosen.values()) or sum(chosen.values())<=0:
-        raise PipelineError('VIRAL_SCORE_WEIGHTS must cover the seven current editorial factors with finite nonnegative weights.')
+    if not isinstance(chosen,dict) or set(chosen) not in (set(WEIGHTS),LEGACY_FACTORS) or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in chosen.values()) or sum(chosen.values())<=0:
+        raise PipelineError('VIRAL_SCORE_WEIGHTS must cover the six current editorial factors with finite nonnegative weights.')
     total=sum(chosen.values())
     return {k:v/total for k,v in chosen.items()}
 
@@ -59,9 +60,11 @@ def score_metadata(visual, metadata, research=None, configured_weights=None):
             visual_audio=(review['opening_visual']+review['ending_visual']+review['framing'])/3,
             metadata=(components['title']+components['description']+components['hashtags'])/3,
             audience=(review['visual_interest']+review['framing'])/2)
+        components['retention']=components['retention_estimate']
         result[platform]={'score':round(sum(components[k]*rubric[k] for k in rubric),2),
             'components':{k:round(components[k],2) for k in rubric},'weights':rubric,
-            'rubric':'hook20/gameplay20/editing15/headline15/visual_audio10/metadata10/audience10',
+            'rubric':'hook25/entertainment20/retention20/editing15/metadata10/audience10' if set(rubric)==set(WEIGHTS) else 'legacy_custom_seven_factor_configuration',
+            'explanations':{'hook':'Sampled opening visibility and rendered hook readability.','entertainment':'Uncalibrated model judgment of sampled visual interest; emotion and game events are not established.','retention':'Opening, ending and measured cut pacing; no actual audience retention data.','editing':'Measured cut pacing plus sampled readability and framing.','metadata':'Title/description length and hashtag count; not proven conversion.','audience':'Offline visual-interest/framing proxy. Live niche/trend relevance is unverified without authorized research.'},
             'confidence':'low','evidence_mode':'offline_plus_current_research' if research and research.get('status')=='available' else 'offline_only',
             'limitation':'Editorial heuristics, not probabilities or predicted views. Sparse samples cannot verify continuous action, retention, audio sync or semantic truth. Title/description factors measure length/readability, not proven engagement.'}
     return result

@@ -120,6 +120,10 @@ export function parseSubtitles(content: string, extension: string, sourceDuratio
 }
 
 export function validatePlan(plan: BrowserRow, sourceDuration: number, sourceDurations?: Record<string,number>): BrowserRow {
+  if(plan.framing==='facecam'){
+    const box=plan.facecam;
+    if(!box||!['x','y','width','height'].every(k=>Number.isFinite(box[k]))||box.x<0||box.y<0||box.width<.02||box.height<.02||box.x+box.width>1.001||box.y+box.height>1.001||!Number.isFinite(plan.facecam_height)||plan.facecam_height<.15||plan.facecam_height>.45)throw new Error('Facecam layout needs a valid original-source crop and a height from 0.15 to 0.45.');
+  }
   if (!Number.isFinite(plan.start) || !Number.isFinite(plan.end) || plan.start < 0 || plan.end <= plan.start || plan.end > sourceDuration + .001) throw new Error("Choose start and end times inside your source video.");
   if (!Array.isArray(plan.scenes) || !plan.scenes.length || plan.scenes.length > 20) throw new Error("An editing plan must have 1–20 source scenes.");
   let duration = 0;
@@ -135,7 +139,9 @@ export function validatePlan(plan: BrowserRow, sourceDuration: number, sourceDur
       const second=sourceDurations?.[scene.secondary_source_id],start=scene.secondary_start??0;
       if(!scene.secondary_source_id||!Number.isFinite(second)||!Number.isFinite(start)||start<0||start+scene.end-scene.start>second!+.001)throw new Error('Split screen needs an available second source covering the shot duration.');
     }
-    duration += scene.end - scene.start;
+    const speed=scene.speed??1,freeze=scene.freeze??0;
+    if(!Number.isFinite(speed)||speed<.5||speed>2||!Number.isFinite(freeze)||freeze<0||freeze>1)throw new Error('Use playback speed 0.5–2 and freeze duration 0–1 second.');
+    duration += (scene.end - scene.start)/speed+freeze;
   }
   if (duration < 1 || duration > 180) throw new Error("Browser clips must be between 1 and 180 seconds. Use a shorter range to limit browser memory use.");
   if (typeof plan.title !== "string" || !plan.title.trim() || plan.title.length > 100) throw new Error("A clip title of 1–100 characters is required.");

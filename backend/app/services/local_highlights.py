@@ -127,6 +127,9 @@ def _candidate_starts(analysis: SourceAnalysis, length: float) -> list[float]:
         starts.add(clamp(segment.start))
     for sample in sorted(analysis.audio, key=lambda item: item.rms, reverse=True)[:12]:
         starts.add(clamp(sample.start - length * .25))
+    if analysis.visual_survey:
+        for sample in sorted(analysis.visual_survey.samples, key=lambda item: item.change, reverse=True)[:24]:
+            starts.add(clamp(sample.timestamp - length * .3))
     scenes = analysis.scenes
     if len(scenes) > 100:
         scenes = [scenes[round(index * (len(scenes) - 1) / 99)] for index in range(100)]

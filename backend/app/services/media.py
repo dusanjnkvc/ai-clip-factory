@@ -317,6 +317,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, output_path: str | Path, mode: str = "fast") -> dict:
     plan = ClipPlan.model_validate(raw_plan)
+    if plan.editor is not None:
+        raise PipelineError('Editable text, captions and asset layers require the shared Remotion renderer.')
     transcript = Transcript.model_validate(raw_transcript)
     source = Path(source_path).resolve()
     output = Path(output_path).resolve()
@@ -366,7 +368,16 @@ def render_clip(source_path: str | Path, raw_plan: dict, raw_transcript: dict, o
             polish = "," + ",".join(effects) if effects else ""
             clock=f'setpts=(PTS-STARTPTS)/{scene.speed:.6f}'
             if scene.freeze:polish+=f',tpad=stop_mode=clone:stop_duration={scene.freeze:.4f}'
-            if plan.framing=='fit':
+            if plan.framing=='facecam':
+                box=plan.facecam
+                fw=max(2,int(width*box.width)//2*2);fh=max(2,int(height*box.height)//2*2)
+                fx=min(width-fw,max(0,int(width*box.x)));fy=min(height-fh,max(0,int(height*box.y)))
+                top=max(2,int(canvas_h*plan.facecam_height)//2*2);bottom=canvas_h-top
+                graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},{clock},split=2[face{index}][game{index}]")
+                graph.append(f"[face{index}]crop={fw}:{fh}:{fx}:{fy},scale={canvas_w}:{top}:force_original_aspect_ratio=increase,crop={canvas_w}:{top},setsar=1[cam{index}]")
+                graph.append(f"[game{index}]scale={canvas_w}:{bottom}:force_original_aspect_ratio=decrease,pad={canvas_w}:{bottom}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[play{index}]")
+                graph.append(f"[cam{index}][play{index}]vstack=inputs=2,fps={output_fps:.6f}{polish}[v{index}]")
+            elif plan.framing=='fit':
                 graph.append(f"[0:v]trim=start={scene.start:.4f}:end={scene.end:.4f},{clock},split=2[fg{index}][bg{index}]")
                 graph.append(f"[bg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},gblur=sigma=24,eq=brightness=-0.06[blur{index}]")
                 graph.append(f"[fg{index}]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease[fit{index}]")

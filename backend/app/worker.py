@@ -109,6 +109,15 @@ def process_job(job_id):
                     plans=service.plan_clips(transcript,rules,{**source.media_info,'path':str(source_path)},count=job.clip_count,mode=job.mode,previous=previous)
                 record_usage(db, service, job.user_id, job.id)
                 for plan in plans:
+                    if options.get('editor_template') and not plan.get('editor'):
+                        import copy
+                        from .services.schemas import ClipPlan,output_duration,expanded_scenes
+                        editor=copy.deepcopy(options['editor_template']);duration=sum(output_duration(s) for s in expanded_scenes(ClipPlan.model_validate(plan).scenes))
+                        original=options.get('editor_template_duration',options.get('duration',10))
+                        for layer in editor['layers']:
+                            layer['start']=min(layer['start'],max(0,duration-.05))
+                            layer['end']=duration if abs(layer['end']-original)<.05 else min(duration,layer['end'])
+                        plan={**plan,'editor':editor};ClipPlan.model_validate(plan)
                     fingerprint = hashlib.sha256(json.dumps({'source': source.sha256, 'scenes': plan.get('scenes'), 'start': plan.get('start'), 'end': plan.get('end')}, sort_keys=True).encode()).hexdigest()
                     candidate = ClipCandidate(job_id=job.id, source_id=source.id, start=plan['start'], end=plan['end'], scores=plan.get('scores', {}), fingerprint=fingerprint)
                     db.add(candidate)

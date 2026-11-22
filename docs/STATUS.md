@@ -1,5 +1,7 @@
 # Implementation and verification status
 
+The unified professional editor upgrade is tracked in [PROFESSIONAL_UPGRADE.md](PROFESSIONAL_UPGRADE.md), including shared Remotion layers, autosave, designs, campaign review, measured motion/facecam proposals, current verification and explicit remaining limitations. The native automatic workflow and free browser capabilities are distinct below.
+
 The `codex/local-ultimate` development branch adds native **AUTO CREATE** with local Ollama analysis, real speech timing, candidate evaluation, FFmpeg output and one metadata package. It requires localhost and free downloaded models; GitHub Pages remains the browser edition below. See [Local Ultimate acceptance evidence and limitations](LOCAL_ULTIMATE.md), including actual API/UI tests and the distinction between fresh analysis and warm-cache GPU measurements.
 
 The user selected a free manual workflow, then requested no login and hosting in a new GitHub repository. The default hosted topology is now a static browser edition; the native Python edition remains optional. Code, unit tests, real rendering, source publication, and live hosting are separate outcomes.

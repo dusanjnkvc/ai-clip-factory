@@ -1,10 +1,12 @@
 """Native project/draft endpoints; existing sources, campaigns and jobs are reused."""
 import os
+import subprocess,shutil
 import json,tempfile,zipfile
 from datetime import datetime
 from urllib.parse import urlparse
 from pathlib import Path
 from statistics import median
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -39,6 +41,8 @@ def row_json(row):
 
 
 class ProjectInput(BaseModel):
+    editor_template: dict | None=None
+    editor_template_duration:float=Field(default=10,ge=1,le=600)
     name: str=Field(min_length=1,max_length=200)
     source_id: str
     campaign_id: str | None=None
@@ -56,12 +60,50 @@ class ProjectInput(BaseModel):
     render_engine: str=Field(default='ffmpeg',pattern='^(ffmpeg|remotion)$')
     framing: str=Field(default='fit',pattern='^(fit|crop)$')
     output_preset: str=Field(default='portrait_1080',pattern='^(portrait_1080|portrait_720|square_1080|landscape_1080)$')
+    output_fps: Literal[30,60]=30
 
     @model_validator(mode='after')
     def duration_bounds(self):
         if self.minimum_duration>self.maximum_duration:
             raise ValueError('Minimum duration exceeds maximum.')
         return self
+
+
+class EditorDefaults(BaseModel):
+    processing_mode:Literal['fast','balanced','quality']='balanced'
+    output_preset:Literal['portrait_1080','portrait_720']='portrait_1080'
+    output_fps:Literal[30,60]=30
+
+@router.get('/preferences')
+def editor_defaults(user:User=Depends(current_user)):
+    return EditorDefaults.model_validate(user.preferences.get('editor_defaults',{})).model_dump()
+
+@router.put('/preferences')
+def save_editor_defaults(body:EditorDefaults,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    user.preferences={**user.preferences,'editor_defaults':body.model_dump()};db.commit();return body.model_dump()
+
+@router.get('/capabilities')
+def capabilities(user:User=Depends(current_user)):
+    from .config import settings
+    from .services.media import ffmpeg_binary
+    from .services.visual_survey import SURVEY_VERSION
+    try:import cv2
+    except ImportError:cv2=None
+    gpu=[]
+    if shutil.which('nvidia-smi'):
+        try:
+            result=subprocess.run(['nvidia-smi','--query-gpu=name,memory.total,memory.used','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=5)
+            if result.returncode==0:
+                for line in result.stdout.splitlines():
+                    name,total,used=line.rsplit(',',2);gpu.append({'name':name.strip(),'total_mib':int(total),'used_mib':int(used)})
+        except (OSError,ValueError,subprocess.TimeoutExpired):pass
+    disk=shutil.disk_usage(settings.media_root)
+    return {'ffmpeg':Path(ffmpeg_binary()).is_file() or bool(shutil.which(ffmpeg_binary())),
+            'opencv':cv2.__version__ if cv2 else 'Not installed','face_detector':bool(cv2 and hasattr(cv2,'CascadeClassifier')),'visual_survey':SURVEY_VERSION,
+            'gpu':gpu,'gpu_measurement':'available' if gpu else 'unavailable',
+            'storage_free_bytes':disk.free,'storage_total_bytes':disk.total,
+            'encoder_policy':os.getenv('LOCAL_AI_ENCODER','auto'),'speech_device':'CPU int8','model_policy':'One local inference slot; CPU recovery on GPU memory errors.',
+            'paid_ai_required':False}
 
 
 @router.get('/projects')
@@ -80,8 +122,16 @@ def create_project(body: ProjectInput,user: User=Depends(current_user),db: Sessi
     for key in body.reference_ids: owner(db,ReferenceStyle,key,user)
     if body.editing_profile=='reference' and not body.reference_ids:
         raise HTTPException(422,'Choose a measured reference profile for Match Reference Style.')
+    options=body.model_dump(exclude={'name','source_id','campaign_id','reference_ids'})
+    if body.editor_template:
+        from .services.editor_schema import EditorState
+        from .editor import check_assets
+        from pydantic import ValidationError
+        try:options['editor_template']=EditorState.model_validate(body.editor_template).check_duration(body.editor_template_duration).model_dump()
+        except (ValidationError,ValueError) as exc:raise HTTPException(422,'Invalid reusable design.') from exc
+        options['editor_asset_paths']=check_assets(user,{'editor':options['editor_template']})
     project=FactoryProject(user_id=user.id,name=body.name,source_id=body.source_id,campaign_id=body.campaign_id,
-        options=body.model_dump(exclude={'name','source_id','campaign_id','reference_ids'}),reference_ids=body.reference_ids)
+        options=options,reference_ids=body.reference_ids)
     db.add(project);db.commit()
     return row_json(project)
 
@@ -121,7 +171,7 @@ def start(project_id: str,request: Request,user: User=Depends(current_user),db: 
         options['reference_profile']=owner(db,ReferenceStyle,project.reference_ids[0],user).profile
     result=auto_create(AutoCreate.model_validate(options),request,user,db)
     job=db.get(ProcessingJob,result['id'])
-    job.payload={**job.payload,'options':{**job.payload['options'],
+    job.payload={**job.payload,'options':{**job.payload['options'],**project.options,
         'minimum_duration':project.options['minimum_duration'],'maximum_duration':project.options['maximum_duration']},'project_id':project.id}
     from .performance import learning_data
     job.payload={**job.payload,'options':{**job.payload['options'],'history':learning_data(db,user)}}
@@ -340,7 +390,8 @@ class DraftEdit(BaseModel):
 def remotion_preview(clip_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     clip=owner(db,RenderedClip,clip_id,user)
     if not clip.media_info.get('remotion_base_key'):return None
-    return {**clip.media_info['remotion_props'],'videoUrl':f'/api/studio/drafts/{clip.id}/remotion-base'}
+    from .editor import assets
+    return {**clip.media_info['remotion_props'],'videoUrl':f'/api/studio/drafts/{clip.id}/remotion-base','assets':{a['id']:f"/api/editor/assets/{a['id']}/content" for a in assets(user)}}
 
 @router.get('/drafts/{clip_id}/remotion-base')
 def remotion_base(clip_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -371,8 +422,14 @@ def edit_draft(clip_id: str,body: DraftEdit,user: User=Depends(current_user),db:
         except ValidationError as exc:raise HTTPException(422,'Invalid platform metadata.') from exc
     current=db.get(EditingPlan,clip.editing_plan_id).plan
     if plan is not None and (plan!=current or body.restore_version):
+        from .editor import check_assets
+        from .services.schemas import ClipPlan
+        from pydantic import ValidationError
+        try:plan=ClipPlan.model_validate(plan).model_dump()
+        except ValidationError as exc:raise HTTPException(422,'Invalid editor plan.') from exc
+        asset_paths=check_assets(user,plan)
         result=regenerate_clip(clip.id,RegenerateRequest(plan=plan),user,db)
-        job=db.get(ProcessingJob,result['id']);job.payload={**job.payload,'options':{**job.payload.get('options',{}),'render_engine':body.render_engine},**({'processing_provider':'local_ai'} if body.render_engine=='remotion' else {})};db.commit()
+        job=db.get(ProcessingJob,result['id']);job.payload={**job.payload,'options':{**job.payload.get('options',{}),'render_engine':body.render_engine,'editor_asset_paths':asset_paths},**({'processing_provider':'local_ai'} if body.render_engine=='remotion' else {})};db.commit()
         if metadata is not None:
             job=db.get(ProcessingJob,result['id']);job.payload={**job.payload,'metadata':metadata};db.commit()
         return {'action':'render_queued','job':result}

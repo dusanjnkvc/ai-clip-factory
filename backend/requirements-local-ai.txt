@@ -1,5 +1,6 @@
 # Optional local-only analysis. Install after requirements.txt.
 # Official package sources: scenedetect.com and github.com/SYSTRAN/faster-whisper.
 scenedetect-headless==0.7.3
+opencv-python-headless==4.14.0.94
 faster-whisper==1.2.1
 yt-dlp==2026.10.26
