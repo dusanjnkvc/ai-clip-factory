@@ -1,5 +1,22 @@
 # AI Clip Factory
 
+## Start the local AI workspace
+
+On Windows, double-click **Start ClipFactory.cmd** in this project folder. It starts the free local AI services in the background, waits for the app to be ready, then opens [the local workspace](http://localhost:3000/). Run it again after restarting your computer. Repeated launches reuse the running workspace. Double-click **Stop ClipFactory.cmd** to stop the services started by this launcher; your videos and projects are kept.
+
+The online **Open running workspace** link connects to your computer; it cannot start Windows programs. If you see `ERR_CONNECTION_REFUSED`, run the launcher first. A failed launch leaves its error visible. Diagnostic logs are in `.runtime/local-workspace-error.log`, `.runtime/local-workspace.log`, and `.runtime/api-error.log`. You do not need an API key.
+
+For a new checkout, first install Python 3.12, Node.js, Ollama and FFmpeg, then run these commands from the project folder in PowerShell. Keep an existing `.env` and environment if already configured:
+
+```powershell
+py -3.12 -m venv .venv
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+npm.cmd --prefix frontend ci
+powershell -ExecutionPolicy Bypass -File scripts/local-ai.ps1 -Setup
+```
+
+Replace the placeholder `APP_SECRET` in a new `.env` with a random value before setup. `-Setup` installs free dependencies and downloads the free vision/speech models, then runs the app in that terminal. Stop that terminal with Ctrl+C before switching to the double-click launcher. Already configured users can just use **Start ClipFactory.cmd**. Setup does not require paid inference or social developer credentials.
+
 ## Unified professional editor
 
 Create Clips now contains **Automatic AI Mode** and **Advanced Manual Mode**. Open a generated clip with **Edit Clip** to adjust its timeline, captions, text, logos, video layers and audio. Drafts autosave without rerunning source AI. Save a visual design for reuse across automatic clips, or review/correct PDF and text campaign rules in the same tab. Video Library holds assets and designs; Settings holds local processing defaults. The original five tabs remain.

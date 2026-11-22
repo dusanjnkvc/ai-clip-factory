@@ -10,6 +10,7 @@ import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, AudioLines, Bell, 
 
 import { api, downloadArtifact } from "@/lib/api";
 import CreateWorkspace from './create-workspace';
+import LocalWorkspaceStart from './local-workspace-start';
 import AssetLibrary from './asset-library';
 import BrowserPerformance from './browser-performance';
 import AccountSetup from './account-setup';
@@ -217,7 +218,7 @@ export default function Factory() {
 
 
 
-      {section === "Create Clips" && <CreateWorkspace editing={professionalClip} notify={notify} onBack={()=>{setProfessionalClip(null);go("Generated Clips");}} onQueued={()=>{setProfessionalClip(null);go("Generated Clips");void refresh();}} automatic={<section className="panel form-body"><h2>Automatic AI clipping</h2><p>Use your free local processing service for vision, speech, automatic highlight selection and GPU rendering. It keeps the same five-tab workspace and does not require a paid AI key.</p><a className="button primary" href="http://localhost:3000/" target="_blank" rel="noreferrer">Open local AI workspace</a><p>Start the local service with scripts/local-ai.ps1. Browser-only editing remains available in Advanced Manual Mode.</p></section>} manual={<section className="panel studio form-body"><LocalCreateFlow campaignOnly={false} campaigns={campaigns} sources={sources} onDone={message=>{notify(message);go("Generated Clips");void refresh();}}/><details><summary>Optional footage measurements and concepts</summary><CreativeDirector notify={notify} onRendered={()=>{go("Generated Clips");void refresh();}}/></details></section>}/>}
+      {section === "Create Clips" && <CreateWorkspace editing={professionalClip} notify={notify} onBack={()=>{setProfessionalClip(null);go("Generated Clips");}} onQueued={()=>{setProfessionalClip(null);go("Generated Clips");void refresh();}} automatic={<LocalWorkspaceStart/>} manual={<section className="panel studio form-body"><LocalCreateFlow campaignOnly={false} campaigns={campaigns} sources={sources} onDone={message=>{notify(message);go("Generated Clips");void refresh();}}/><details><summary>Optional footage measurements and concepts</summary><CreativeDirector notify={notify} onRendered={()=>{go("Generated Clips");void refresh();}}/></details></section>}/>}
 
 
 
