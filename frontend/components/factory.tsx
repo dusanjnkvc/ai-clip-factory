@@ -9,11 +9,15 @@ import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, AudioLines, Bell, 
 
 
 import { api, downloadArtifact } from "@/lib/api";
+import CreateWorkspace from './create-workspace';
+import AssetLibrary from './asset-library';
+import BrowserPerformance from './browser-performance';
 import AccountSetup from './account-setup';
 import dynamic from 'next/dynamic';
 const RemotionPreview=dynamic(()=>import('./remotion-preview'),{ssr:false});
 import LocalCreateFlow from "./local-create-flow";
 import ManualRuleFields from "./manual-rule-fields";
+import BrowserClipGallery from "./browser-clip-gallery";
 import WorkspaceSettings from "./workspace-settings";
 import CreativeDirector from "./creative-director";
 import AutoCreate from "./auto-create";
@@ -46,6 +50,7 @@ function Platform({ name }: {name: string}) { return <span className={`platform 
 
 export default function Factory() {
 
+  const [professionalClip,setProfessionalClip]=useState<Row|null>(null);
   const [section, setSection] = useState<Section>("Create Clips");
 
   const [user, setUser] = useState<Row | null>(null);
@@ -93,17 +98,20 @@ export default function Factory() {
 
       const me = await api("/auth/me"); setUser(me); setConnected(true);
 
-      const results = await Promise.allSettled([api("/dashboard"), api("/sources"), api("/settings")]);
+      const results = await Promise.allSettled([api("/dashboard"), api("/sources"), api("/settings"), api("/campaigns")]);
 
       if (results[0].status === "fulfilled") setData(results[0].value);
 
       if (results[1].status === "fulfilled") setSources(list(results[1].value));
 
       if (results[2].status === "fulfilled") setConfiguration(results[2].value);
+      if (results[3].status === "fulfilled") {const savedCampaigns=results[3].value;setData(previous=>({...previous,campaigns:savedCampaigns}));}
 
     } catch { setUser(null); }
 
   }, []);
+
+  useEffect(()=>{const changed=()=>void refresh();window.addEventListener('campaigns-changed',changed);return()=>window.removeEventListener('campaigns-changed',changed);},[refresh]);
 
   const loadSection = useCallback(async () => {
 
@@ -174,7 +182,7 @@ export default function Factory() {
 
     <main>
 
-      <div className="page-heading"><div><div className="eyebrow">{section === "Dashboard" ? "YOUR CREATIVE COMMAND CENTER" : "AI CLIP FACTORY"}</div><h1>{section === "Dashboard" ? "Let’s make something worth watching." : sectionLabel}</h1><p>{({ "AUTO CREATE": "Local AI analysis, three edited drafts, and your approval.", "Dashboard": "From source video to standout clips. All in one flow.", "Content Rewards": "Campaign rules, creative work, and compliance in one place.", "AI Creative Director": "Measure your footage, compare concepts, and direct every edit locally.", "Create Clips": freeMode ? "Choose your moment. Edit with Remotion. No paid API key required." : "Find the strongest moments. Give each one its own edit.", "Video Library": "Your authorized source material, ready for its next story.", "Generated Clips": "Distinctive edits. Platform-ready metadata. Full creative control.", "AI Video Editor": "Fine-tune the details and preserve every version.", "Publishing Queue": "Review, authorize, and publish through official integrations.", "Connected Accounts": "Connect your channels. Keep control of every publication.", "Submissions": "Publication is the beginning. Get your campaign submission ready.", "Earnings & Analytics": "Real performance, transparent costs, and verified payouts.", "Settings": freeMode ? "Local processing is enabled. Paid AI calls are blocked." : "Configure your workspace and cloud processing services." } as Record<Section, string>)[section]}</p></div><div className="heading-actions">{section === "Dashboard" && <button className="button secondary" onClick={() => newWork(true)}><Plus size={16} />New campaign</button>}{!["Settings", "Connected Accounts", "Earnings & Analytics", "Submissions", "AI Creative Director", "Create Clips"].includes(section) && <button className="button primary" onClick={() => newWork(section === "Content Rewards")}><Zap size={16} fill="currentColor" />{section === "Content Rewards" ? "New campaign" : freeMode ? (process.env.NEXT_PUBLIC_BROWSER_MODE!=="true" ? "AUTO CREATE" : "Create clip") : "Generate FAST"}</button>}</div></div>
+      <div className="page-heading"><div><div className="eyebrow">{section === "Dashboard" ? "YOUR CREATIVE COMMAND CENTER" : "AI CLIP FACTORY"}</div><h1>{section === "Dashboard" ? "Let’s make something worth watching." : sectionLabel}</h1><p>{({ "AUTO CREATE": "Local AI analysis, three edited drafts, and your approval.", "Dashboard": "From source video to standout clips. All in one flow.", "Content Rewards": "Campaign rules, creative work, and compliance in one place.", "AI Creative Director": "Measure your footage, compare concepts, and direct every edit locally.", "Create Clips": freeMode ? "Generate publishing suggestions, then refine your clip in the shared editor." : "Find the strongest moments. Give each one its own edit.", "Video Library": "Your authorized source material, ready for its next story.", "Generated Clips": "Distinctive edits. Platform-ready metadata. Full creative control.", "AI Video Editor": "Fine-tune the details and preserve every version.", "Publishing Queue": "Review, authorize, and publish through official integrations.", "Connected Accounts": "Connect your channels. Keep control of every publication.", "Submissions": "Publication is the beginning. Get your campaign submission ready.", "Earnings & Analytics": "Actual publication performance and recorded observations.", "Settings": freeMode ? "Local processing is enabled. Paid AI calls are blocked." : "Configure your workspace and cloud processing services." } as Record<Section, string>)[section]}</p></div><div className="heading-actions">{section === "Dashboard" && <button className="button secondary" onClick={() => newWork(true)}><Plus size={16} />New campaign</button>}{!["Settings", "Connected Accounts", "Earnings & Analytics", "Submissions", "AI Creative Director", "Create Clips"].includes(section) && <button className="button primary" onClick={() => newWork(section === "Content Rewards")}><Zap size={16} fill="currentColor" />{section === "Content Rewards" ? "New campaign" : freeMode ? (process.env.NEXT_PUBLIC_BROWSER_MODE!=="true" ? "AUTO CREATE" : "Create clip") : "Generate FAST"}</button>}</div></div>
 
 
 
@@ -209,7 +217,7 @@ export default function Factory() {
 
 
 
-      {section === "Create Clips" && <section className="panel studio form-body"><h2>Create a clip in your browser</h2><p>This GitHub Pages edition uses manual timing and supplied subtitles. Automatic local model processing runs in the native localhost edition.</p><LocalCreateFlow campaignOnly={false} campaigns={campaigns} sources={sources} onDone={message=>{notify(message);go('Generated Clips');void refresh();}}/><details><summary>Optional footage measurements and concepts</summary><CreativeDirector notify={notify} onRendered={()=>{go('Generated Clips');void refresh();}}/></details></section>}
+      {section === "Create Clips" && <CreateWorkspace editing={professionalClip} notify={notify} onBack={()=>{setProfessionalClip(null);go("Generated Clips");}} onQueued={()=>{setProfessionalClip(null);go("Generated Clips");void refresh();}} automatic={<section className="panel form-body"><h2>Automatic AI clipping</h2><p>Use your free local processing service for vision, speech, automatic highlight selection and GPU rendering. It keeps the same five-tab workspace and does not require a paid AI key.</p><a className="button primary" href="http://localhost:3000/" target="_blank" rel="noreferrer">Open local AI workspace</a><p>Start the local service with scripts/local-ai.ps1. Browser-only editing remains available in Advanced Manual Mode.</p></section>} manual={<section className="panel studio form-body"><LocalCreateFlow campaignOnly={false} campaigns={campaigns} sources={sources} onDone={message=>{notify(message);go("Generated Clips");void refresh();}}/><details><summary>Optional footage measurements and concepts</summary><CreativeDirector notify={notify} onRendered={()=>{go("Generated Clips");void refresh();}}/></details></section>}/>}
 
 
 
@@ -222,13 +230,14 @@ export default function Factory() {
 
       {section === "AUTO CREATE" && <Studio notify={notify}/>}
 
+      {section === "Video Library" && <AssetLibrary/>}
       {section === "Video Library" && <section className="panel"><div className="panel-heading"><h2>Authorized source videos<span className="count-badge">{rows.length}</span></h2><button className="text-button" onClick={() => newWork()}><UploadCloud size={15} />Upload video</button></div>{rows.length ? <div className="source-list">{rows.map(s => <div className="source-row" key={s.id}><span className="source-icon"><Video size={23} /></span><div><strong>{s.filename || s.name || "Source video"}</strong><small>{s.duration ? `${Math.round(s.duration)} seconds · ` : ""}{s.width && s.height ? `${s.width} × ${s.height} · ` : ""}{date(s.created_at)}</small></div><Badge tone="mint">Rights recorded</Badge><button className="button secondary small-button" onClick={() => newWork()}>Create clips<ArrowRight size={14} /></button></div>)}</div> : <Empty icon={UploadCloud} title="Good stories start with good source material" text="Upload an MP4, MOV, or WebM you own or have permission to use. Originals are preserved." action={<button className="button primary" onClick={() => newWork()}><UploadCloud size={16} />Upload source video</button>} />}</section>}
 
 
 
       {section === "Generated Clips" && jobs.filter(j=>['queued','processing','failed','blocked'].includes(j.status)).map(j=><Job key={j.id} job={j}/>)}
 
-      {["Generated Clips", "AI Video Editor"].includes(section) && (rows.length ? <div className="clip-grid">{rows.map(c => <ClipCard key={c.id} clip={c} onClick={() => void openClip(c)} />)}</div> : <section className="panel"><Empty icon={section === "AI Video Editor" ? Scissors : Film} title={section === "AI Video Editor" ? "Your edits, down to the frame" : "Your first clip belongs here"} text="Create a clip from an authorized source, then preview, adjust its timing, review compliance, and download the real MP4." action={<button className="button primary" onClick={() => newWork()}><Scissors size={15} />Create a clip</button>} /></section>)}
+      {["Generated Clips", "AI Video Editor"].includes(section) && (rows.length ? <BrowserClipGallery clips={rows} campaigns={campaigns} renderClip={c=><ClipCard clip={c} onClick={()=>void openClip(c)}/>} onRefresh={()=>{void loadSection();void refresh();}} notify={notify}/> : <section className="panel"><Empty icon={section === "AI Video Editor" ? Scissors : Film} title={section === "AI Video Editor" ? "Your edits, down to the frame" : "Your first clip belongs here"} text="Create a clip from an authorized source, then preview, adjust its timing, review compliance, and download the real MP4." action={<button className="button primary" onClick={() => newWork()}><Scissors size={15} />Create a clip</button>} /></section>)}
 
 
 
@@ -246,12 +255,12 @@ export default function Factory() {
 
 
 
-      {section === "Earnings & Analytics" && <>{process.env.NEXT_PUBLIC_BROWSER_MODE!=="true"&&<PerformanceDashboard notify={notify}/>}<Analytics analytics={analytics} onImport={async (file) => { const form = new FormData(); form.append("file", file); await api("/analytics/import-csv", {method:"POST", body:form}); loadSection(); }} notify={notify} /><FinancialRecords notify={notify} onSaved={()=>{loadSection();refresh();}} /></>}
+      {section === "Earnings & Analytics" && <BrowserPerformance analytics={analytics}/>}
 
 
 
       {section === "Settings" && <AccountSetup browserMode/>}
-      {section === "Settings" && <details className="panel form-body"><summary>Saved campaign and publication records</summary><div className="button-row">{(['Content Rewards','Publishing Queue','Connected Accounts','Submissions'] as Section[]).map(name=><button className="button secondary" key={name} onClick={()=>go(name)}>{name==='Content Rewards'?'Saved campaigns':name}</button>)}</div></details>}
+      {section === "Settings" && <details className="panel form-body"><summary>Saved campaign and publication records</summary><div className="button-row">{(['Content Rewards','Publishing Queue','Connected Accounts','Submissions'] as Section[]).map(name=><button className="button secondary" key={name} onClick={()=>go(name==='Content Rewards'?'Create Clips':name)}>{name==='Content Rewards'?'Campaigns in Create Clips':name}</button>)}</div></details>}
       {section === "Settings" && <WorkspaceSettings localNoAuth={localNoAuth} config={config} freeMode={freeMode} aiReady={aiReady} user={user} refresh={refresh} notify={notify} signIn={()=>setAuth(true)} signOut={async()=>{await api("/auth/logout",{method:"POST"});setUser(null);setData({metrics:{}});notify("Signed out of your workspace.");}}/>}
 
       <footer className="footer"><span><span className="tiny-dot" />Creative control. Browser rendering.</span><span>AI Clip Factory<span className="footer-version">v0.1</span></span></footer>
@@ -266,7 +275,7 @@ export default function Factory() {
 
     {selected && section === "Content Rewards" && <Modal wide title={selected.name} subtitle="Campaign rules and source evidence" close={() => setSelected(null)}><CampaignDetails freeMode={freeMode} campaign={selected} onUpdate={(c) => {setSelected(c); refresh(); loadSection();}} notify={notify} /></Modal>}
 
-    {selected && ["Generated Clips", "AI Video Editor"].includes(section) && <Modal wide title={selected.title || selected.metadata?.youtube?.[0]?.title || "Your generated clip"} subtitle="Preview, compliance, metadata, and editing controls" close={() => setSelected(null)}><ClipDetails freeMode={freeMode} clip={selected} editing={section === "AI Video Editor"} onUpdate={() => {loadSection(); refresh(); if(selected) void openClip(selected);}} notify={notify} /></Modal>}
+    {selected && ["Generated Clips", "AI Video Editor"].includes(section) && <Modal wide title={selected.title || selected.metadata?.youtube?.[0]?.title || "Your generated clip"} subtitle="Preview, compliance, metadata, and editing controls" close={() => setSelected(null)}><ClipDetails onAdvanced={()=>{setProfessionalClip(selected);setSelected(null);go("Create Clips");}} freeMode={freeMode} clip={selected} editing={section === "AI Video Editor"} onUpdate={() => {loadSection(); refresh(); if(selected) void openClip(selected);}} notify={notify} /></Modal>}
 
     {help && <Modal title="From source to first clip" subtitle="A workflow you control." close={() => setHelp(false)}><div className="help-content"><ol><li>{localNoAuth ? "Open the app and start creating. This local workspace has no login or account setup." : "Create your workspace account."}</li><li>Add a campaign brief and review the supplied requirements. Local extraction is a helper, not an AI compliance decision.</li><li>Upload a video you are authorized to use, then choose your clip’s start and end times.</li><li>Optionally upload an SRT or VTT file with subtitle timestamps. Without a subtitle file, the clip is rendered without speech captions.</li><li>Write or edit the title and description, choose the crop, and select Render clip.</li><li>Preview the MP4, review compliance, and download the manual upload package. Record the actual public post URL after publishing.</li></ol><p>{freeMode ? "Free local mode uses FFmpeg on your computer. Paid AI requests are blocked, and automatic transcription or AI moment selection is unavailable. Keep the app open while rendering." : "Hosted processing is available only when explicitly configured. Review the README for configuration."}</p></div></Modal>}
 
@@ -367,7 +376,7 @@ function CampaignDetails({campaign,onUpdate,notify,freeMode}:{campaign:Row;onUpd
 
 
 
-function ClipDetails({clip,editing,onUpdate,notify,freeMode}:{clip:Row;editing:boolean;onUpdate:()=>void;notify:(s:string)=>void;freeMode:boolean}) {
+function ClipDetails({clip,editing,onUpdate,notify,freeMode,onAdvanced}:{clip:Row;editing:boolean;onUpdate:()=>void;notify:(s:string)=>void;freeMode:boolean;onAdvanced:()=>void}) {
 
   const [platform,setPlatform]=useState("youtube");const [tab,setTab]=useState(editing?"edit":"metadata");const [busy,setBusy]=useState(false);const [variant,setVariant]=useState(0);
 
@@ -397,7 +406,7 @@ function ClipDetails({clip,editing,onUpdate,notify,freeMode}:{clip:Row;editing:b
 
   }catch(e){notify((e as Error).message);}finally{setBusy(false);}}
 
-  return <div className="clip-detail"><div className="clip-preview">{clip.preview_url?<RemotionPreview clip={clip}/>:<Empty title="Preview unavailable" text="A successful render is needed before a clip can be previewed."/>}<div className="button-row"><button className="button primary" onClick={()=>downloadArtifact(`/clips/${clip.id}/download`).catch((e:Error)=>notify(e.message))}><ArrowDownToLine size={15}/>Download MP4</button><button className="button secondary" onClick={()=>downloadArtifact(`/clips/${clip.id}/package`).catch((e:Error)=>notify(e.message))}><FileText size={15}/>Upload package</button></div><div className="clip-version-label"><Film size={12}/>{clip.media_info?.width} × {clip.media_info?.height} · {Number(clip.media_info?.duration||0).toFixed(1)}s · v{clip.current_version||1}</div></div>
+  return <div className="clip-detail"><button className="button primary" onClick={onAdvanced}>Edit Clip · Advanced Manual Mode</button><div className="clip-preview">{clip.preview_url?<RemotionPreview clip={clip}/>:<Empty title="Preview unavailable" text="A successful render is needed before a clip can be previewed."/>}<div className="button-row"><button className="button primary" onClick={()=>downloadArtifact(`/clips/${clip.id}/download`).catch((e:Error)=>notify(e.message))}><ArrowDownToLine size={15}/>Download MP4</button><button className="button secondary" onClick={()=>downloadArtifact(`/clips/${clip.id}/package`).catch((e:Error)=>notify(e.message))}><FileText size={15}/>Upload package</button></div><div className="clip-version-label"><Film size={12}/>{clip.media_info?.width} × {clip.media_info?.height} · {Number(clip.media_info?.duration||0).toFixed(1)}s · v{clip.current_version||1}</div></div>
 
     <div className="clip-inspector"><div className="segmented tabs">{["metadata","compliance","edit","publish"].map(t=><button key={t} className={tab===t?"selected":""} onClick={()=>setTab(t)}>{t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
@@ -486,19 +495,3 @@ function PublishingForm({clip,notify,onUpdate}:{clip:Row;notify:(s:string)=>void
 
 
 function SubmissionRow({submission:s,onUpdate,notify}:{submission:Row;onUpdate:()=>void;notify:(s:string)=>void}){const remaining=s.deadline?new Date(s.deadline).getTime()-Date.now():null;return <div className="submission-row"><span className="campaign-initial"><CheckCheck size={20}/></span><div><strong>{s.campaign_name||"Campaign submission"}</strong><small>Published {date(s.published_at||s.created_at)}</small>{s.post_url&&<a href={s.post_url} target="_blank" rel="noreferrer" className="text-button">Published post<ExternalLink size={12}/></a>}</div><div className="submission-status"><Badge tone={s.status==="submitted"?"mint":remaining!=null&&remaining<5*60*1000?"red":"amber"}>{status(s.status)}</Badge>{remaining!=null&&!["submitted","approved","rejected"].includes(s.status)&&<small className={remaining<15*60*1000?"error-text":""}>{remaining<=0?"Deadline passed":`${Math.ceil(remaining/60000)} min remaining`}</small>}</div>{(s.submission_url||s.campaign_url)&&<a className="button secondary small-button" href={s.submission_url||s.campaign_url} target="_blank" rel="noreferrer">Open submission<ArrowUpRight size={13}/></a>}{s.status==="pending"&&<button className="button secondary small-button" onClick={async()=>{try{await api(`/submissions/${s.id}/confirm`,{method:"POST",body:JSON.stringify({status:"submitted",confirmation:"User confirms the campaign submission was completed manually."})});notify("Manual submission confirmed and recorded.");onUpdate();}catch(e){notify((e as Error).message);}}}><Check size={13}/>Confirm submitted</button>}</div>;}
-
-
-
-function Analytics({analytics,onImport,notify}:{analytics:Row;onImport:(file:File)=>Promise<void>;notify:(s:string)=>void}){const m=analytics.metrics||{};return <><div className="metric-grid">{[{label:"Reported views",value:m.reported_views?.toLocaleString()??"—",detail:"Reported ≠ payment eligible"},{label:"Estimated earnings",value:money(m.estimated_earnings),detail:"Unconfirmed campaign estimates"},{label:"Confirmed earnings",value:money(m.confirmed_earnings),detail:"Confirmed by campaign owner"},{label:"Actual payouts",value:money(m.paid_earnings??m.actual_payouts),detail:"Payments received"}].map(i=><div className="metric-card" key={i.label}><span>{i.label}</span><strong>{i.value}</strong><small>{i.detail}</small></div>)}</div><div className="dashboard-columns"><section className="panel"><div className="panel-heading"><h2>Performance & earnings</h2><label className="button secondary small-button file-button"><UploadCloud size={14}/>Import views CSV<input type="file" accept=".csv,text/csv" onChange={async(e)=>{const file=e.target.files?.[0];if(file)try{await onImport(file);notify("Analytics import saved.");}catch(err){notify((err as Error).message);}}}/></label></div>{list(analytics.earnings).length?<div className="source-list">{list(analytics.earnings).map((e,i)=><div className="source-row" key={e.id||i}><Coins size={19}/><div><strong>{e.campaign_name||e.campaign_id||"Imported earnings"}</strong><small>{status(e.kind||e.status)} · {date(e.created_at)}</small></div><strong>{money(e.amount??e.amount_usd)}</strong></div>)}</div>:<Empty icon={Activity} title="The numbers will tell your story" text="Connect an eligible analytics integration or import a CSV. No views or earnings are estimated without supporting data."/>}</section><section className="panel"><div className="panel-heading"><h2>Processing economics</h2><Gauge size={18}/></div><div className="economics"><label>Processing expenses<strong>{money(m.processing_expenses)}</strong></label><label>Estimated net earnings<strong>{m.estimated_earnings!=null&&m.processing_expenses!=null?money(m.estimated_earnings-m.processing_expenses):"—"}</strong></label><p>Expenses use reported cost records. Provider usage is recorded separately; monetary charges are never guessed.</p><details><summary>CSV import format</summary><p>See README for the exact import columns and supported statuses. Values are validated by the backend before saving.</p></details></div></section></div><section className="panel"><div className="panel-heading"><h2>Published posts</h2></div>{list(analytics.posts).length?list(analytics.posts).map(p=><div className="source-row" key={p.id}><Platform name={p.platform}/><div><strong>{p.title||p.platform}</strong><small>{date(p.published_at)}</small></div><a className="text-button" href={p.url} target="_blank" rel="noreferrer">View post<ExternalLink size={13}/></a></div>):<div className="slim-empty"><Radio size={20}/>Publication results appear here after a real upload or a manual post record.</div>}</section></>;}
-
-
-
-function BudgetControls({config,onSaved,notify}:{config:Row;onSaved:()=>void;notify:(s:string)=>void}) {
-  const [busy,setBusy]=useState(false);return <form className="budget-controls" onSubmit={async(e)=>{e.preventDefault();setBusy(true);const f=new FormData(e.currentTarget);try{await api("/settings",{method:"PATCH",body:JSON.stringify({monthly_spend_limit_usd:Number(f.get("monthly")),max_job_cost_usd:Number(f.get("job"))})});notify("Workspace spending limits saved.");onSaved();}catch(e){notify((e as Error).message);}finally{setBusy(false);}}}><label>Monthly allowance (USD)<input type="number" name="monthly" min="0" max={config.monthly_spend_limit_usd} step="0.01" defaultValue={config.preferences?.monthly_spend_limit_usd??config.monthly_spend_limit_usd} required/></label><label>Maximum reservation per job (USD)<input type="number" name="job" min="0.01" max={config.max_job_cost_usd} step="0.01" defaultValue={config.preferences?.max_job_cost_usd??config.max_job_cost_usd} required/></label><small>A zero monthly allowance blocks new paid operations. Provider billing limits should also be configured.</small><button className="button secondary" disabled={busy}><Check size={13}/>Save spending limits</button></form>;
-}
-
-function FinancialRecords({notify,onSaved}:{notify:(s:string)=>void;onSaved:()=>void}) {
-  const [open,setOpen]=useState(false);const [kind,setKind]=useState("earnings");const [campaigns,setCampaigns]=useState<Row[]>([]);const [busy,setBusy]=useState(false);
-  useEffect(()=>{if(open)api("/campaigns").then(r=>setCampaigns(list(r))).catch(()=>{});},[open]);
-  return <section className="panel financial-records"><div className="panel-heading"><div><h2>Evidence-backed financial records</h2><p>Enter real amounts from campaign reports or provider invoices.</p></div><button className="button secondary small-button" onClick={()=>setOpen(!open)}><Plus size={14}/>{open?"Close form":"Add record"}</button></div>{open&&<form className="form-body financial-form" onSubmit={async(e)=>{e.preventDefault();setBusy(true);const f=new FormData(e.currentTarget);try{await api(kind==="earnings"?"/earnings":"/costs",{method:"POST",body:JSON.stringify(kind==="earnings"?{campaign_id:f.get("campaign_id"),amount:Number(f.get("amount")),currency:f.get("currency"),kind:f.get("earning_kind"),provenance:f.get("provenance")}:{amount:Number(f.get("amount")),provider:f.get("provider")})});notify("Financial record saved. Estimates, confirmed earnings, and payouts remain separate.");setOpen(false);onSaved();}catch(e){notify((e as Error).message);}finally{setBusy(false);}}}><div className="generation-settings"><label>Record type<select value={kind} onChange={e=>setKind(e.target.value)}><option value="earnings">Campaign earnings</option><option value="cost">Processing expense</option></select></label><label>Amount<input type="number" name="amount" min="0" step="0.01" required placeholder="0.00"/></label></div>{kind==="earnings"?<><label>Campaign<select name="campaign_id" required><option value="">Select a campaign</option>{campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label><div className="generation-settings"><label>Earnings category<select name="earning_kind"><option value="estimated">Estimated earnings</option><option value="confirmed">Confirmed earnings</option><option value="paid">Actual payout received</option></select></label><label>Currency<select name="currency"><option>USD</option><option>EUR</option><option>GBP</option></select></label></div><label>Source evidence<textarea name="provenance" rows={2} required minLength={8} placeholder="Campaign report, payout reference, and reporting period"/></label></>:<label>Provider and invoice reference<input name="provider" required minLength={8} maxLength={100} placeholder="Provider name · invoice reference"/></label>}<p className="form-footnote">Records are additive. Enter each amount once. The dashboard summary includes USD records only; processing expenses use USD.</p><button className="button primary" disabled={busy}><Check size={14}/>Save financial record</button></form>}</section>;
-}

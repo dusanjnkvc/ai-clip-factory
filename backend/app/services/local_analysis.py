@@ -27,6 +27,7 @@ from . import media
 from .media import ConfigurationError, PipelineError
 from .ollama_provider import InferenceCancelled, OllamaProvider
 from .schemas import Transcript
+from .visual_survey import VisualSurvey, SURVEY_VERSION, survey_video
 
 ANALYZER_VERSION = "local-source-v1"
 
@@ -109,6 +110,7 @@ class SourceAnalysis(Contract):
     scenes: list[SceneBoundary] = Field(min_length=1, max_length=2000)
     frames: list[MeasuredFrame] = Field(min_length=1, max_length=48)
     audio: list[AudioSample] = Field(default_factory=list, max_length=7200)
+    visual_survey: VisualSurvey | None = None
     transcript: Transcript
     findings: list[Finding] = Field(min_length=1, max_length=48)
     game_or_topic: str
@@ -143,6 +145,8 @@ class SourceAnalysis(Contract):
         for sample in self.audio:
             if sample.end > duration + .05 or sample.end <= sample.start:
                 raise ValueError("Audio samples must fit the source")
+        if self.visual_survey and any(s.timestamp > duration for s in self.visual_survey.samples):
+            raise ValueError("Visual survey samples must fit the source")
         return self
 
 
@@ -215,13 +219,23 @@ def detect_scenes(path: Path, duration: float, cancel=None) -> list[dict]:
     return [{"start": start, "end": end} for start, end in zip(boundaries, boundaries[1:]) if end > start]
 
 
-def sampling_times(duration: float, scenes: list[dict], count: int) -> list[float]:
+def sampling_times(duration: float, scenes: list[dict], count: int, survey: dict | None = None, audio: list | None = None) -> list[float]:
     """Cover the whole source, then add representative measured scene interiors."""
     count = min(48, max(1, count))
     uniform_count = max(1, math.ceil(count / 2))
     uniform = [duration * (index + .5) / uniform_count for index in range(uniform_count)]
     candidates = [(scene["start"] + scene["end"]) / 2 for scene in scenes]
     chosen = list(uniform)
+    if survey:
+        # Reserve half the budget for uniform coverage. Measured activity only
+        # prioritizes deeper inspection; it never establishes a semantic event.
+        activity = [(s['timestamp'], s['change']) for s in survey.get('samples', []) if s['change'] > .01]
+        activity += [((a['start']+a['end'])/2, a['rms']) for a in (audio or []) if a['rms'] > .02]
+        for value, _ in sorted(activity, key=lambda item: item[1], reverse=True):
+            if len(chosen) >= min(count, uniform_count + max(1, (count-uniform_count)//2)):
+                break
+            if all(abs(value-prior) > max(.25, duration/count/3) for prior in chosen):
+                chosen.append(value)
     while len(chosen) < count and candidates:
         best = max(candidates, key=lambda value: min(abs(value - prior) for prior in chosen))
         candidates.remove(best)
@@ -511,6 +525,7 @@ class LocalSourceAnalyzer:
                 raise PipelineError('Frame budget must be an integer from1 to48.')
             choices['max_frames']=max_frames
         choices['sample_max_side']=512
+        choices['visual_survey']=SURVEY_VERSION
         source_hash = media.sha256_file(path)
         supplied = _validate_transcript(transcript, info["duration"]) if transcript is not None else None
         identity = hashlib.sha256(json.dumps({"source": source_hash, "model_digest": model_digest, "endpoint": status.get("endpoint"), "settings": choices, "supplied_transcript": supplied}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -566,10 +581,34 @@ class LocalSourceAnalyzer:
         _check(cancel)
         progress("Measuring local source audio", 35)
         audio = [a.model_dump() for a in reusable.audio] if reusable else audio_rms(path, info["duration"], cancel) if info["has_audio"] else []
-        times = sampling_times(info["duration"], scenes, choices["max_frames"])
-        frames, images = sample_frames(path, times, info["duration"], cancel,max_side=512)
+        survey_path=self.cache_dir/f'survey-{source_hash}-{SURVEY_VERSION}.json'
+        survey = reusable.visual_survey.model_dump() if reusable and reusable.visual_survey and reusable.visual_survey.version == SURVEY_VERSION else None
+        if survey is None:
+            try:
+                saved=json.loads(survey_path.read_text(encoding='utf-8'))
+                if saved['source_sha256']==source_hash and saved['duration']==info['duration']:
+                    candidate=VisualSurvey.model_validate(saved['survey'])
+                    if candidate.version==SURVEY_VERSION and all(s.timestamp<info['duration'] for s in candidate.samples):survey=candidate.model_dump()
+            except (OSError,KeyError,TypeError,ValueError):pass
+        if survey is None:
+            survey=survey_video(path,info['duration'],cancel)
+            self.cache_dir.mkdir(parents=True,exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=self.cache_dir,suffix='.tmp',delete=False) as stream:
+                json.dump({'source_sha256':source_hash,'duration':info['duration'],'survey':survey},stream);survey_temporary=Path(stream.name)
+            os.replace(survey_temporary,survey_path)
+        progress(f"Measured {len(survey['samples'])} visual activity samples across the source", 39)
+        times = sampling_times(info["duration"], scenes, choices["max_frames"], survey, audio)
+        same_vision=bool(reusable and reusable.model.get('digest')==model_digest and all(reusable.settings.get(k)==choices[k] for k in ('game','context','sample_max_side')) and reusable.transcript.model_dump()==speech)
+        full_vision_reuse=same_vision and len(reusable.frames)==choices['max_frames']
+        if full_vision_reuse:
+            frames=[f.model_dump() for f in reusable.frames];images=[]
+        else:frames, images = sample_frames(path, times, info["duration"], cancel,max_side=512)
         progress(f"Decoded {len(frames)} representative source frames", 42)
-        findings, guesses, topic_notes, analysis_notes = [], [], [], []
+        findings=[f.model_dump() for f in reusable.findings] if full_vision_reuse else []
+        guesses=[reusable.game_or_topic] if full_vision_reuse else []
+        topic_notes=[reusable.topic_uncertainty] if full_vision_reuse else []
+        analysis_notes=['Reused the complete source-hashed visual observations from the same local model, frame budget, transcript and context; the new motion survey supplements those observations.'] if full_vision_reuse else []
+        reusable_findings={f.evidence_id:f for f in reusable.findings} if same_vision else {}
 
         def interpret(batch):
             _check(cancel)
@@ -594,7 +633,16 @@ class LocalSourceAnalyzer:
             for offset in range(0, len(images), choices["batch_size"]):
                 _check(cancel)
                 batch = images[offset:offset + choices["batch_size"]]
-                data = interpret(batch)
+                real_frames=frames[offset:offset+len(batch)]
+                cached_observations=[];missing=[]
+                for image,frame in zip(batch,real_frames):
+                    prior=reusable_findings.get(frame['evidence_id'])
+                    if prior and abs(prior.timestamp-frame['timestamp'])<.001:
+                        cached_observations.append(FrameObservation.model_validate({k:v for k,v in prior.model_dump().items() if k in FrameObservation.model_fields}))
+                    else:missing.append(image)
+                data=interpret(missing) if missing else VisionBatch(observations=cached_observations,game_or_topic=reusable.game_or_topic,topic_uncertainty=reusable.topic_uncertainty)
+                if missing and cached_observations:data.observations.extend(cached_observations)
+                if cached_observations:analysis_notes.append('Reused unchanged, source-hashed frame interpretations from the same local model and context; newly selected activity frames were interpreted separately.')
                 observed = set()
                 for observation in data.observations:
                     match = next((frame for frame in frames[offset:offset + choices["batch_size"]] if abs(frame["timestamp"] - observation.timestamp) < .001), None)
@@ -620,7 +668,7 @@ class LocalSourceAnalyzer:
             warnings.append("Source resolution is below the target export; upscaling cannot restore detail.")
         if any(frame["sharpness"] < 30 for frame in frames):
             warnings.append("Some sampled frames have low measured edge detail; inspect the actual source.")
-        result = SourceAnalysis(source_sha256=source_hash, cache_identity=identity, source={key: value for key, value in info.items() if key != "path"}, model={"name": status.get("model"), "digest": model_digest, "provider": "ollama_local"}, settings=choices, scenes=scenes, frames=frames, audio=audio, transcript=speech, findings=findings, game_or_topic=choices["game"] or (guesses[0] if guesses else "Unidentified source topic"), topic_origin="user_supplied" if choices["game"] else "local_model_unverified", topic_uncertainty="; ".join(dict.fromkeys(topic_notes)), warnings=warnings, limitations=["Visual observations are uncertain local-model interpretations of representative still frames, not verified events or continuous subject tracking.", "Scene boundaries are measured visual cuts, not semantic event start/end times.", "OpenCV seek timestamps are frame-index/fps estimates; variable-frame-rate sources may need manual timing review.", "Crop hints use edge-weighted visual centroids and may miss faces, HUD, logos, or meaningful subjects.", "Audio RMS measures loudness only. Speech recognition and model text require review against the actual video."], analyzed_at=datetime.now(timezone.utc).isoformat()).model_dump()
+        result = SourceAnalysis(source_sha256=source_hash, cache_identity=identity, source={key: value for key, value in info.items() if key != "path"}, model={"name": status.get("model"), "digest": model_digest, "provider": "ollama_local"}, settings=choices, scenes=scenes, frames=frames, audio=audio, visual_survey=survey, transcript=speech, findings=findings, game_or_topic=choices["game"] or (guesses[0] if guesses else "Unidentified source topic"), topic_origin="user_supplied" if choices["game"] else "local_model_unverified", topic_uncertainty="; ".join(dict.fromkeys(topic_notes)), warnings=warnings, limitations=["Visual observations are uncertain local-model interpretations of representative still frames, not verified events or continuous subject tracking.", "Scene boundaries are measured visual cuts, not semantic event start/end times.", "OpenCV seek timestamps are frame-index/fps estimates; variable-frame-rate sources may need manual timing review.", "Crop hints use edge-weighted visual centroids and may miss faces, HUD, logos, or meaningful subjects.", "Audio RMS measures loudness only. Speech recognition and model text require review against the actual video.", *survey['limitations']], analyzed_at=datetime.now(timezone.utc).isoformat()).model_dump()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.cache_dir, prefix=identity + ".", suffix=".tmp", delete=False) as stream:
             json.dump(result, stream, ensure_ascii=False)

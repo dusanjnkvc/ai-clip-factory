@@ -59,3 +59,15 @@ test('real WASM renders paired footage, source-preserving composition, fade, and
   assert.equal(result.media_info.source_count,2);assert.equal(result.media_info.decode_verified,true);
   assert.ok(Math.abs(result.media_info.duration-1.8)<.3);assert.equal(result.media_info.has_audio,true);
 });
+
+test('real WASM speed and freeze change output timing with supplied captions preserved',async()=>{
+  const plan=structuredClone(base);plan.scenes=[{...base.scenes[0],speed:2,freeze:.3}];
+  const result=await renderer.renderBrowserClip(main,plan,cues,'fast',async()=>{}, {main:{blob:main,cues}});
+  assert.ok(Math.abs(result.media_info.duration-1.2)<.15);assert.equal(result.media_info.decode_verified,true);assert.equal(result.media_info.has_audio,true);
+});
+
+test('real WASM facecam crop preserves complete gameplay beneath the camera',async()=>{
+  const plan=structuredClone(base);plan.framing='facecam';plan.facecam={x:.05,y:.05,width:.3,height:.4};plan.facecam_height=.3;
+  const result=await renderer.renderBrowserClip(main,plan,cues,'fast',async()=>{}, {main:{blob:main,cues}});
+  assert.equal(result.media_info.width,540);assert.equal(result.media_info.height,960);assert.equal(result.media_info.decode_verified,true);
+});

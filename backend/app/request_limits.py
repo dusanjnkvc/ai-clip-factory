@@ -26,6 +26,8 @@ class RequestBodyLimitMiddleware:
         # Smaller upload routes and JSON cannot consume the full media allowance.
         if path == "/api/sources":
             return self.max_body_bytes
+        if path == '/api/editor/assets':
+            return min(self.max_body_bytes, 51 * 1024 * 1024)
         if path.startswith("/api/campaigns/") and path.endswith("/attachments"):
             return min(self.max_body_bytes, 21 * 1024 * 1024)
         if path == "/api/analytics/import-csv":

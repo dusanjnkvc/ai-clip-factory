@@ -11,8 +11,12 @@ export async function renderWithRemotion(base:Blob,plan:BrowserRow,sourceFiles:R
   const url=URL.createObjectURL(base);
   const fontUrl=new URL(`${process.env.NEXT_PUBLIC_BASE_PATH||''}/ffmpeg/NotoSans.ttf`,location.origin).href;
   const props=remotionProps(plan,sourceFiles,url,fontUrl);
+  if(plan.editor?.layers.some((l:BrowserRow)=>l.kind!=='text')){
+    const {getRecord,mediaUrl}=await import('./browser-db');props.assets={};
+    for(const layer of plan.editor.layers){if(!layer.asset_id)continue;const asset=await getRecord('editor_assets',layer.asset_id);if(!asset)throw new Error('A required editor asset is missing.');props.assets[layer.asset_id]=await mediaUrl(asset.storage_key);}
+  }
   try{
-    const result=await renderMediaOnWeb({composition:{id:'ClipFactory',component:ClipComposition,width,height,fps,defaultProps:props,durationInFrames:Math.round(plan.scenes.reduce((n:number,s:BrowserRow)=>n+s.end-s.start,0)*fps)},inputProps:props,container:'mp4',videoCodec:'h264',audioCodec:'aac',videoBitrate:'high',audioBitrate:128000,mediaCacheSizeInBytes:128*1024*1024,onProgress:({progress:value})=>{void progress('Remotion is rendering text, captions and campaign wording',65+Math.floor(value*30));}});
-    return {blob:await result.getBlob(),props:{...props,videoUrl:''}};
+    const result=await renderMediaOnWeb({composition:{id:'ClipFactory',component:ClipComposition,width,height,fps,defaultProps:props,durationInFrames:Math.round(plan.scenes.reduce((n:number,s:BrowserRow)=>n+(s.end-s.start)/(s.speed||1)+(s.freeze||0),0)*fps)},inputProps:props,container:'mp4',videoCodec:'h264',audioCodec:'aac',videoBitrate:'high',audioBitrate:128000,mediaCacheSizeInBytes:128*1024*1024,onProgress:({progress:value})=>{void progress('Remotion is rendering text, captions and campaign wording',65+Math.floor(value*30));}});
+    return {blob:await result.getBlob(),props:{...props,videoUrl:'',assets:{}}};
   }finally{URL.revokeObjectURL(url);}
 }

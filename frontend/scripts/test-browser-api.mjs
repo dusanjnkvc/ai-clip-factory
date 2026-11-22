@@ -11,7 +11,7 @@ import ts from "typescript";
 const temporary = await mkdtemp(path.join(tmpdir(), "acf-browser-api-tests-"));
 await mkdir(path.join(temporary, "creative"));
 after(() => rm(temporary, { recursive: true, force: true }));
-const names = ["browser-api", "browser-rules", "browser-pdf", "browser-metadata", ...["types", "styles", "compliance", "director", "publishing", "index"].map(name => `creative/${name}`)];
+const names = ["browser-api", "browser-rules", "browser-pdf", "browser-metadata", "remotion-plan", "editor-project", "browser-editor-api", "editor-assets", ...["types", "styles", "compliance", "director", "publishing", "index"].map(name => `creative/${name}`)];
 for (const name of names) {
   const source = await readFile(new URL(`../lib/${name}.ts`, import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
@@ -58,6 +58,7 @@ const { browserApi, browserDownload } = await import(pathToFileURL(path.join(tem
 const db = await import(pathToFileURL(path.join(temporary, "browser-db.mjs")));
 const media = await import(pathToFileURL(path.join(temporary, "browser-media.mjs")));
 const { emptyRules, validateRules } = await import(pathToFileURL(path.join(temporary, "browser-rules.mjs")));
+const {emptyEditor,newLayer,applyTemplate} = await import(pathToFileURL(path.join(temporary,'editor-project.mjs')));
 const { generateConcepts, toEditPlan } = await import(pathToFileURL(path.join(temporary, "creative/index.mjs")));
 const source = {id:"authorized-source",filename:"Owned source.mp4",storage_key:"sources/authorized.mp4",rights_confirmed:true,media_info:{duration:60,width:1920,height:1080,has_audio:true}};
 const analysis = {source_id:source.id,fingerprint:"measured-fixture",duration:60,width:1920,height:1080,frames:Array.from({length:12},(_,index)=>({timestamp:index*5,thumbnail:"",change:.1,motion:.1,focus_x:.5,focus_y:.5,brightness:.5,sharpness:.5,focus_confidence:"low"})),scene_changes:[15,30,45],cues:[{start:2,end:5,text:"An exact supplied cue"}],limitations:["No semantic model"],warnings:[],method:"local_measured",analyzed_at:"2026-11-17T12:00:00Z",audio:{status:"unavailable",samples:[]}};
@@ -201,4 +202,44 @@ test('uploaded text rules are extracted with filename evidence and render requir
   assert.deepEqual(updated.rules.required_mentions,['@creator']);
   assert.deepEqual(updated.rules.required_on_video_text,['EXACT WORDING']);
   assert.equal(updated.rules.evidence.find(e=>e.field==='required_mentions').source,'rules.txt');
+});
+
+test('editor autosave, templates and asset references preserve clips without analysis or rendering',async()=>{
+  const job=await postJob();assert.equal((await settled(job.id)).status,'completed');
+  const [clip]=await browserApi('/clips');const edit=structuredClone(clip.plan);edit.editor=emptyEditor();
+  const video=await browserApi('/editor/assets/from-source',request({source_id:source.id}));
+  edit.editor.layers=[{...newLayer('video',5,video.id),opacity:.6,rotation:12}];
+  const draft=await browserApi(`/editor/drafts/${clip.id}`,request({revision:0,plan:edit,metadata:clip.metadata},'PUT'));
+  assert.equal(draft.revision,1);assert.equal(media.renders.length,1);assert.equal((await browserApi(`/clips/${clip.id}`)).current_version,1);
+  assert.deepEqual((await browserApi(`/editor/drafts/${clip.id}`)).plan.editor.layers,edit.editor.layers);
+  await assert.rejects(browserApi(`/editor/drafts/${clip.id}`,request({revision:0,plan:edit,metadata:clip.metadata},'PUT')),/another window/);
+  await assert.rejects(browserApi(`/editor/assets/${video.id}`,{method:'DELETE'}),/used by a clip/);
+  const template=await browserApi('/editor/templates',request({name:'Reusable design',duration:12,editor:edit.editor,campaign_id:'campaign'}));
+  assert.equal(applyTemplate(template.editor,3,12).layers[0].end,3);
+  edit.editor.layers[0].asset_id='not-owned';
+  await assert.rejects(browserApi(`/editor/drafts/${clip.id}`,request({revision:1,plan:edit,metadata:clip.metadata},'PUT')),/owned editor record/);
+  assert.equal(media.renders.length,1);
+});
+
+test('gallery Remotion previews resolve current owned media rather than expired render URLs',async()=>{
+  const job=await postJob();await settled(job.id);const [clip]=await db.listRecords('clips');
+  const video=await browserApi('/editor/assets/from-source',request({source_id:source.id}));clip.plan.editor=emptyEditor();clip.plan.editor.layers=[newLayer('video',5,video.id)];
+  clip.media_info.remotion_base_key='owned-clean-base';clip.media_info.remotion_props={assets:{},hook:'Existing hook'};
+  await db.putBlob('owned-clean-base',new Blob(['base']));await db.setRecord('clips',clip);
+  const props=await browserApi(`/clips/${clip.id}/remotion`);assert.equal(props.assets[video.id],'blob:local-test/'+source.storage_key);assert.equal(props.videoUrl,'blob:local-test/owned-clean-base');
+});
+
+test('duplicated editable projects preserve independent media and clear approval',async()=>{
+  const job=await postJob();await settled(job.id);const [clip]=await db.listRecords('clips');
+  const result=await browserApi(`/editor/drafts/${clip.id}/duplicate`,{method:'POST'}),copy=await browserApi(`/clips/${result.id}`);
+  assert.notEqual(copy.id,clip.id);assert.equal(copy.current_version,1);assert.equal(copy.draft_approved,false);
+  assert.notEqual(copy.storage_key,clip.storage_key);assert.equal(media.renders.length,1);assert.deepEqual(copy.plan,clip.plan);
+});
+
+test('publication edits stay attached to a newly rendered version and stale reviews fail',async()=>{
+  const job=await postJob();await settled(job.id);const [clip]=await browserApi('/clips');const metadata=structuredClone(clip.metadata);
+  metadata.youtube.variants[0].title='My corrected publication title';
+  const edited=await browserApi(`/clips/${clip.id}/regenerate`,request({plan:clip.plan,metadata}));assert.equal((await settled(edited.id)).status,'completed');
+  assert.equal((await browserApi(`/clips/${clip.id}`)).metadata.youtube.variants[0].title,'My corrected publication title');
+  await assert.rejects(browserApi(`/clips/${clip.id}/review`,request({version:1,note:'Stale review cannot affect the new version.'})),/changed/);
 });

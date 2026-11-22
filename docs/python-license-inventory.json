@@ -380,13 +380,14 @@
   },
   {
     "name": "opencv-python-headless",
-    "version": "5.1.0.95",
+    "version": "4.14.0.94",
     "license": "Apache 2.0",
     "license_files": [
       "cv2/LICENSE-3RD-PARTY.txt",
       "cv2/LICENSE.txt",
-      "opencv_python_headless-5.1.0.95.dist-info/LICENSE-3RD-PARTY.txt",
-      "opencv_python_headless-5.1.0.95.dist-info/LICENSE.txt"
+      "cv2/data/haarcascade_license_plate_rus_16stages.xml",
+      "opencv_python_headless-4.14.0.94.dist-info/LICENSE-3RD-PARTY.txt",
+      "opencv_python_headless-4.14.0.94.dist-info/LICENSE.txt"
     ],
     "license_classifiers": [
       "License :: OSI Approved :: Apache Software License"
@@ -404,6 +405,15 @@
       "packaging/licenses/__pycache__/__init__.cpython-312.pyc",
       "packaging/licenses/__pycache__/_spdx.cpython-312.pyc",
       "packaging/licenses/_spdx.py"
+    ],
+    "license_classifiers": []
+  },
+  {
+    "name": "pillow",
+    "version": "13.0.0",
+    "license": "MIT-CMU",
+    "license_files": [
+      "pillow-13.0.0.dist-info/licenses/LICENSE"
     ],
     "license_classifiers": []
   },

@@ -1,5 +1,11 @@
 # AI Clip Factory
 
+## Unified professional editor
+
+Create Clips now contains **Automatic AI Mode** and **Advanced Manual Mode**. Open a generated clip with **Edit Clip** to adjust its timeline, captions, text, logos, video layers and audio. Drafts autosave without rerunning source AI. Save a visual design for reuse across automatic clips, or review/correct PDF and text campaign rules in the same tab. Video Library holds assets and designs; Settings holds local processing defaults. The original five tabs remain.
+
+Install/update native dependencies with `.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt -r backend/requirements-local-ai.txt` and keep the existing frontend dependencies/startup workflow. No paid AI key is required. The free online edition provides browser editing; automatic local model processing requires the local service. See [upgrade evidence and remaining limitations](docs/PROFESSIONAL_UPGRADE.md).
+
 ## Clip rules, Remotion and free online editing
 
 Text/PDF clip rules are visible in Create Clips. Required #hashtags and @mentions lead publication text; exact required on-screen wording is rendered into the video. The online edition reads text-based PDFs with PDF.js and uses Remotion for its final video layers, retaining a free FFmpeg compatibility mode. Settings includes a guided YouTube/TikTok developer-app setup flow. Actual authorization still requires registered developer apps and approved permissions; GitHub Pages cannot hold client secrets.
@@ -36,7 +42,7 @@ No account or API key is required:
 
 This section describes the **browser edition**. The native edition also offers AUTO CREATE through the local setup above and retains manual clipping.
 
-1. Import an authorized source through **Create Clips**, and save/review a campaign if the edit is for one. Open **AI Creative Director**, then select that source and campaign.
+1. Import an authorized source through **Create Clips**, and save/review a campaign if the edit is for one. Use the source-bound concept controls within the creation workflow, then select that source and campaign.
 2. Choose a preferred duration, pace, audience, style, and output size. Analyze the source and create concepts. Local measurements include up to 24 decoded frame samples, candidate visual changes, brightness/detail, low-confidence crop hints, and bounded audio-level analysis when the browser can decode it. No person, game event, scene meaning, or dialogue is recognized.
 3. Compare the proposed High Engagement, Cinematic, and Creative Storytelling concepts. Short footage can produce fewer than three proposals; the app explains missing alternatives instead of inventing footage. Hook scores are explained editing heuristics, not retention forecasts.
 4. Edit source times, shot order, text, framing, crop motion, composition, transitions, effects, captions, and metadata. Preview actual source shots, lock decisions, and use undo/redo. Save projects locally; regeneration creates a fresh proposal after preserving the current draft.

@@ -7,6 +7,7 @@ import { compliance, extractRules, manualMetadata, manualPlan, parseSubtitles, v
 import { inspectVideo } from "./browser-media";
 import {renderClipForBrowser} from './browser-rendering';
 import {proposePublishing} from './browser-metadata';
+import {validateEditor,planDuration} from './editor-project';
 
 const LOCAL_USER = { id: "browser-local-owner", name: "Local", email: "", local_workspace: true };
 const SOURCE_LIMIT_MB = 1500;
@@ -97,6 +98,7 @@ async function updateJob(id: string, changes: BrowserRow): Promise<BrowserRow> {
 
 // Validate what will actually be encoded, including settings changed in the editor.
 async function creativePreflight(plan: BrowserRow, sources: BrowserRow[], rules: BrowserRow) {
+  if(plan.editor){validateEditor(plan.editor,planDuration(plan));for(const layer of plan.editor.layers){if(layer.kind==='text')continue;const asset=await required('editor_assets',layer.asset_id);if(asset.kind!==layer.kind)throw new Error('Layer and library asset types differ.');if(asset.duration!=null&&layer.trim_start+layer.end-layer.start>asset.duration+.05)throw new Error('A media layer extends beyond its source.');}}
   if (!plan.creative_concept) return;
   const { validateConcept } = await import('./creative/index');
   const concept = {
@@ -221,6 +223,7 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
   await initialize();
   path = path.replace(/^\/api(?=\/)/, "").split("?")[0];
   const method = (options.method || "GET").toUpperCase(), parts = path.split("/").filter(Boolean);
+  if(parts[0]==='editor'){const {browserEditorApi}=await import('./browser-editor-api');return browserEditorApi(path,options);}
   if (path === "/health") return { status: "ok", version: "0.2.0-browser", ...configuration() };
   if (path === "/auth/me") return { ...LOCAL_USER, preferences: (await getRecord("settings", "workspace"))?.preferences || {} };
   if (path.startsWith("/auth/")) throw new Error("This browser workspace opens directly. No account or login is required.");
@@ -310,7 +313,7 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     if (parts.length === 1 && method === "GET") return Promise.all((await listRecords("clips")).map(clipJson));
     const clip = await required("clips", parts[1]);
     if (parts.length === 2 && method === "GET") return clipJson(clip);
-    if(parts[2]==='remotion'&&method==='GET')return clip.media_info.remotion_base_key?{...clip.media_info.remotion_props,videoUrl:await mediaUrl(clip.media_info.remotion_base_key)}:null;
+    if(parts[2]==='remotion'&&method==='GET'){if(!clip.media_info.remotion_base_key)return null;const assets:BrowserRow={};for(const layer of clip.plan.editor?.layers||[]){if(!layer.asset_id)continue;const asset=await required('editor_assets',layer.asset_id);assets[layer.asset_id]=await mediaUrl(asset.storage_key);}return {...clip.media_info.remotion_props,assets,videoUrl:await mediaUrl(clip.media_info.remotion_base_key)};}
     if (["download", "video", "package"].includes(parts[2])) throw new Error("Use this clip’s download button to save its local browser file.");
     if (parts[2] === "metadata" && method === "PATCH") {
       const raw=body(options).metadata;for(const block of Object.values(raw) as BrowserRow[])block.variants=block.variants.map((v:BrowserRow)=>enforceCampaignMetadata(v,clip.rules_snapshot));
@@ -319,7 +322,7 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
       next.status = next.compliance.status === "PASS" ? "ready" : "review"; await setRecord("clips", next); await audit("clip.metadata_updated", clip.id); return clipJson(next);
     }
     if (parts[2] === "review" && method === "POST") {
-      const values = body(options); if (String(values.note || "").trim().length < 8) throw new Error("A meaningful review evidence note is required.");
+      const values = body(options); if(values.version!=null&&values.version!==clip.current_version)throw new Error("This clip changed. Review its current version."); if (String(values.note || "").trim().length < 8) throw new Error("A meaningful review evidence note is required.");
       const allowed = ["branding", "content_restrictions", "audio_restrictions", "source_material", "campaign_uncertainties", "campaign_contradictions", "platforms", "approval_requirement", "disclosures", "campaign_evidence","creative_context","manual_editing","original_footage","music_restrictions","ai_voice_restrictions","paid_promotion","prohibited_footage","audience_restrictions","on_video_text"];
       const evidence: BrowserRow = {};
       for (const [key, value] of Object.entries(values.evidence || {}) as [string, BrowserRow][]) { if (!allowed.includes(key) || value?.confirmed !== true || String(value?.note || "").trim().length < 8) throw new Error("Each semantic check needs confirmation and at least eight characters of evidence."); evidence[key] = { confirmed: true, note: value.note, reviewed_by: LOCAL_USER.id, reviewed_at: timestamp() }; }
@@ -329,7 +332,7 @@ export async function browserApi(path: string, options: RequestInit = {}): Promi
     }
     if (parts[2] === "regenerate" && method === "POST") {
       const values = body(options); if (values.optimize_metadata) throw new Error("AI metadata generation is disabled. Use the manual metadata editor.");
-      return queueRender({ campaign_id: clip.campaign_id, source_id: clip.source_id, plan: values.plan || clip.plan, mode: values.mode || "fast", rules_snapshot: clip.rules_snapshot, payload: { clip_id: clip.id, base_version: clip.current_version, metadata: clip.metadata_json } });
+      return queueRender({ campaign_id: clip.campaign_id, source_id: clip.source_id, plan: values.plan || clip.plan, mode: values.mode || "fast", rules_snapshot: clip.rules_snapshot, payload: { clip_id: clip.id, base_version: clip.current_version, metadata: values.metadata?validateMetadata(values.metadata):clip.metadata_json } });
     }
     if(parts[2]==='regenerate-metadata'&&method==='POST'){
       const source=await required('sources',clip.source_id),cues=(await getRecord('subtitles',source.id))?.cues||[];

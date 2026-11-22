@@ -539,6 +539,7 @@ def update_metadata(clip_id: str,body: ClipMetadataUpdate,user: User=Depends(cur
     return clip_json(clip)
 
 class ReviewUpdate(BaseModel):
+    version: int | None = Field(default=None,ge=1)
     evidence: dict = Field(default_factory=dict)
     draft_approved: bool = False
     note: str = Field(min_length=8,max_length=4000)
@@ -546,6 +547,8 @@ class ReviewUpdate(BaseModel):
 @app.post('/api/clips/{clip_id}/review')
 def review_clip(clip_id: str,body: ReviewUpdate,user: User=Depends(current_user),db: DBSession=Depends(get_db)):
     clip=owned(db,RenderedClip,clip_id,user)
+    if body.version is not None and body.version!=clip.current_version:
+        raise HTTPException(409,'The clip changed. Review its current version.')
     plan=db.get(EditingPlan,clip.editing_plan_id)
     allowed={'branding','content_restrictions','audio_restrictions','source_material','campaign_uncertainties','campaign_contradictions','platforms','approval_requirement','disclosures','campaign_evidence','creative_context','manual_editing','original_footage','music_restrictions','ai_voice_restrictions','paid_promotion','prohibited_footage','audience_restrictions','on_video_text','resolution_requirements','logo_requirements','other_requirements'}
     allowed.add('submission_deadline')
@@ -1016,3 +1019,5 @@ from .social import router as social_router
 app.include_router(social_router)
 from .performance import router as performance_router
 app.include_router(performance_router)
+from .editor import router as editor_router
+app.include_router(editor_router)

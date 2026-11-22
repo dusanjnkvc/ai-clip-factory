@@ -121,13 +121,13 @@ function captionsAss(plan:BrowserRow,defaultCues:CaptionCue[],sources:Record<str
     const cues=sources[scene.source_id||plan.source_id]?.cues||defaultCues;
     if(plan.subtitles_enabled&&settings.enabled!==false)for(const cue of cues){
       const start=Math.max(cue.start,scene.start),end=Math.min(cue.end,scene.end);
-      if(end>start){text+=`Dialogue: 0,${assTime(offset+start-scene.start)},${assTime(offset+end-scene.start)},Caption,,0,0,0,,${captionAnimation(settings.animation||'none',Math.round(width/2),Math.round(y))}${assText(cue.text)}\n`;count++;}
+      if(end>start){text+=`Dialogue: 0,${assTime(offset+(start-scene.start)/(scene.speed||1))},${assTime(offset+(end-scene.start)/(scene.speed||1))},Caption,,0,0,0,,${captionAnimation(settings.animation||'none',Math.round(width/2),Math.round(y))}${assText(cue.text)}\n`;count++;}
     }
     if(scene.overlay_text){
       const placement=scene.overlay_position==='bottom'?`{\\an2\\pos(${Math.round(width/2)},${height-bottom})}`:'';
       text+=`Dialogue: 1,${assTime(offset)},${assTime(offset+Math.min(scene.end-scene.start,4))},Label,,0,0,0,,${placement}${assText(scene.overlay_text)}\n`;
     }
-    offset+=scene.end-scene.start;
+    offset+=(scene.end-scene.start)/(scene.speed||1)+(scene.freeze||0);
   }
   if(count>3000)throw new Error('Too many overlapping caption cues for one short export. Simplify the supplied subtitle file.');
   if(plan.show_hook&&plan.hook)text+=`Dialogue: 2,0:00:00.00,${assTime(Math.min(2.5,offset))},Hook,,0,0,0,,${assText(plan.hook)}\n`;
@@ -173,19 +173,26 @@ export async function renderBrowserClip(source:Blob,plan:BrowserRow,cues:Caption
     }
     await onProgress('Building the validated source timeline',15);
     const captions=captionsAss(plan,cues,sources,width,height);await engine.writeFile(captionFile,new TextEncoder().encode(captions.text));
-    expectedSeconds=plan.scenes.reduce((total:number,scene:BrowserRow)=>total+scene.end-scene.start,0);
+    expectedSeconds=plan.scenes.reduce((total:number,scene:BrowserRow)=>total+(scene.end-scene.start)/(scene.speed||1)+(scene.freeze||0),0);
     const graph:string[]=[],concat:string[]=[];
     for(const [index,scene] of plan.scenes.entries()){
-      const selected=inputs[scene.source_id||mainId],duration=scene.end-scene.start;
+      const selected=inputs[scene.source_id||mainId],speed=scene.speed||1,freeze=scene.freeze||0,duration=(scene.end-scene.start)/speed+freeze;
       if(!selected||scene.start<0||scene.end>selected.info.duration+.05)throw new Error('A storyboard scene extends beyond its source video.');
       const raw=`raw${index}`;
-      graph.push(`[${selected.index}:v]trim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},setpts=PTS-STARTPTS,fps=30[${raw}]`);
+      graph.push(`[${selected.index}:v]trim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},setpts=(PTS-STARTPTS)/${speed},fps=30${freeze?`,tpad=stop_mode=clone:stop_duration=${freeze}`:''}[${raw}]`);
       let composed=`compose${index}`;
-      if(scene.composition==='split'){
+      if(plan.framing==='facecam'){
+        const box=plan.facecam,top=Math.round(height*(plan.facecam_height||.28)/2)*2,bottom=height-top;
+        const fw=Math.max(2,Math.floor(selected.info.width*box.width/2)*2),fh=Math.max(2,Math.floor(selected.info.height*box.height/2)*2),fx=Math.min(selected.info.width-fw,Math.floor(selected.info.width*box.x)),fy=Math.min(selected.info.height-fh,Math.floor(selected.info.height*box.y));
+        graph.push(`[${raw}]split=2[camraw${index}][gameraw${index}]`);
+        graph.push(`[camraw${index}]crop=${fw}:${fh}:${fx}:${fy},scale=${width}:${top}:force_original_aspect_ratio=increase,crop=${width}:${top},setsar=1[cam${index}]`);
+        graph.push(`[gameraw${index}]scale=${width}:${bottom}:force_original_aspect_ratio=decrease,pad=${width}:${bottom}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[game${index}]`);
+        graph.push(`[cam${index}][game${index}]vstack=inputs=2[${composed}]`);
+      }else if(scene.composition==='split'){
         const secondary=inputs[scene.secondary_source_id],start=Number(scene.secondary_start||0);
         if(!secondary||start<0||start+duration>secondary.info.duration+.05)throw new Error('Split-screen footage is missing or too short.');
         graph.push(`[${raw}]${cropChain(selected.info,width,height/2,scene)}[top${index}]`);
-        graph.push(`[${secondary.index}:v]trim=start=${start.toFixed(4)}:end=${(start+duration).toFixed(4)},setpts=PTS-STARTPTS,fps=30,${cropChain(secondary.info,width,height/2,{...scene,crop_x:.5,crop_y:.5,crop_x_end:.5,crop_y_end:.5,zoom:1})}[bottom${index}]`);
+        graph.push(`[${secondary.index}:v]trim=start=${start.toFixed(4)}:end=${(start+scene.end-scene.start).toFixed(4)},setpts=(PTS-STARTPTS)/${speed},fps=30${freeze?`,tpad=stop_mode=clone:stop_duration=${freeze}`:''},${cropChain(secondary.info,width,height/2,{...scene,crop_x:.5,crop_y:.5,crop_x_end:.5,crop_y_end:.5,zoom:1})}[bottom${index}]`);
         graph.push(`[top${index}][bottom${index}]vstack=inputs=2[${composed}]`);
       }else if(scene.composition==='fit_blur'){
         graph.push(`[${raw}]split=2[bg${index}][fg${index}]`);
@@ -198,7 +205,7 @@ export async function renderBrowserClip(source:Blob,plan:BrowserRow,cues:Caption
       if(scene.effect==='retro')polish.push('eq=contrast=1.1:saturation=0.72','noise=alls=2:allf=t');
       if(scene.transition==='fade'&&duration>.5){const fade=Math.min(.14,duration/5);polish.push(`fade=t=in:st=0:d=${fade.toFixed(3)}`,`fade=t=out:st=${(duration-fade).toFixed(3)}:d=${fade.toFixed(3)}`);}
       graph.push(`[${composed}]${polish.length?polish.join(','):'null'}[v${index}]`);
-      if(selected.info.has_audio&&plan.audio_treatment!=='mute')graph.push(`[${selected.index}:a]atrim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`);
+      if(selected.info.has_audio&&plan.audio_treatment!=='mute')graph.push(`[${selected.index}:a]atrim=start=${scene.start.toFixed(4)}:end=${scene.end.toFixed(4)},asetpts=PTS-STARTPTS,atempo=${speed},apad=pad_dur=${freeze},atrim=duration=${duration.toFixed(4)},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`);
       else graph.push(`anullsrc=r=48000:cl=stereo:d=${duration.toFixed(4)}[a${index}]`);
       concat.push(`[v${index}][a${index}]`);
     }

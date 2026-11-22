@@ -10,4 +10,5 @@ cryptography==46.0.3
 boto3==1.40.75
 imageio-ffmpeg==0.6.0
 pypdf==6.3.0
+Pillow==13.0.0
 pytest==9.0.1

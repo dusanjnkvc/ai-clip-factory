@@ -132,6 +132,37 @@ def test_sampling_covers_source_and_stays_bounded():
     assert all(0 <= value < 100 for value in times)
 
 
+def test_activity_prioritization_keeps_full_source_coverage_and_budget():
+    survey={'samples':[{'timestamp':70,'change':.9},{'timestamp':74,'change':.8}]}
+    times=sampling_times(100,[{'start':0,'end':100}],12,survey)
+    assert len(times)==12 and 70 in times and times[0]<10 and times[-1]>90
+    assert len(sampling_times(100,[{'start':0,'end':100}],1,survey))==1
+
+
+def test_real_visual_survey_and_persistent_face_proposals(two_scene_video):
+    from app.services.visual_survey import survey_video,persistent_face
+    data=survey_video(two_scene_video,2)
+    assert len(data['samples'])==2 and data['samples'][1]['change']>.01
+    assert data['facecam'] is None
+    # Known normalized detections exercise persistence, not model accuracy.
+    box=(.04,.08,.1,.17)
+    assert persistent_face([[box]]*12,12)[0] is not None
+    assert persistent_face([[box]]+[[]]*11,12)[0] is None
+    assert persistent_face([[(.4,.2,.4,.5)]]*12,12)[0] is None
+
+
+def test_facecam_layout_decodes_using_original_source_coordinates(two_scene_video,tmp_path):
+    from test_pipeline import sample_plan
+    from app.services.schemas import ClipPlan
+    plan=sample_plan();plan.update(start=0,end=2,framing='facecam',facecam={'x':0,'y':0,'width':.3,'height':.4},facecam_height=.3,output_preset='portrait_720',subtitles_enabled=False)
+    plan['scenes']=[{**plan['scenes'][0],'start':0,'end':2}]
+    output=tmp_path/'split.mp4'
+    result=media.render_clip(two_scene_video,plan,{'text':'','words':[],'segments':[],'provider':'no_audio','timing_source':'none'},output)
+    assert result['width']==720 and result['height']==1280 and result['decode_verified']
+    plan['facecam']['x']=.9
+    with pytest.raises(ValueError):ClipPlan.model_validate(plan)
+
+
 def test_analysis_uses_real_measurements_no_audio_and_traceable_model_evidence(two_scene_video, analyzer):
     result = analyzer.analyze(two_scene_video)
     assert result["source"]["duration"] == pytest.approx(2, abs=.05)
@@ -159,6 +190,18 @@ def test_cache_uses_actual_source_model_settings_and_supplied_transcript(two_sce
     assert changed["topic_origin"] == "user_supplied"
     analyzer.provider.digest = "different-installed-weights"
     assert analyzer.analyze(two_scene_video)["cache_identity"] != original["cache_identity"]
+
+
+def test_cache_upgrade_keeps_valid_model_observations_and_measured_survey(two_scene_video,analyzer):
+    original=analyzer.analyze(two_scene_video)
+    cache=analyzer.cache_dir/(original['cache_identity']+'.json')
+    legacy=copy.deepcopy(original);legacy['cache_identity']='a'*64;legacy['settings'].pop('visual_survey');legacy.pop('visual_survey')
+    cache.unlink();(analyzer.cache_dir/('a'*64+'.json')).write_text(json.dumps(legacy),encoding='utf-8')
+    analyzer.provider.calls.clear()
+    upgraded=analyzer.analyze(two_scene_video)
+    assert not analyzer.provider.calls and upgraded['findings']==original['findings']
+    assert upgraded['visual_survey']['samples']==original['visual_survey']['samples']
+    assert any('complete source-hashed' in message for message in upgraded['warnings'])
 
 
 def test_corrupt_cache_is_recomputed_and_never_presented_as_inference(two_scene_video, analyzer):

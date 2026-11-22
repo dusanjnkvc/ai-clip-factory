@@ -6,6 +6,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from .editor_schema import EditorState, CropBox
 
 
 PLATFORMS = ("youtube", "tiktok", "instagram")
@@ -207,6 +208,7 @@ class SoundCue(Model):
 
 
 class ClipPlan(Model):
+    editor: EditorState | None = None
     title: str = Field(min_length=1, max_length=160)
     start: float = Field(ge=0)
     end: float = Field(gt=0)
@@ -225,7 +227,9 @@ class ClipPlan(Model):
     score_origin: Literal["heuristic", "not_scored"] = "heuristic"
     manual_metadata: ManualMetadata | None = None
     audio_treatment: Literal["source", "mute"] = "source"
-    framing: Literal["crop", "fit"] = "crop"
+    framing: Literal["crop", "fit", "facecam"] = "crop"
+    facecam: CropBox | None = None
+    facecam_height: float = Field(default=.28, ge=.15, le=.45)
     output_preset: Literal['portrait_1080','portrait_720','square_1080','landscape_1080'] = 'portrait_1080'
     output_fps: Literal[30,60] = 30
     required_on_video_text: list[str] = Field(default_factory=list, max_length=6)
@@ -241,6 +245,8 @@ class ClipPlan(Model):
 
     @model_validator(mode="after")
     def timeline(self):
+        if self.framing == 'facecam' and self.facecam is None:
+            raise ValueError('Facecam layout requires a crop rectangle in the original source')
         if self.end <= self.start:
             raise ValueError("Clip end must be after start")
         if self.end - self.start > 600:
@@ -249,6 +255,7 @@ class ClipPlan(Model):
             if scene.start < self.start - .001 or scene.end > self.end + .001:
                 raise ValueError("Scene is outside the selected source range")
         duration = sum(output_duration(s) for s in expanded_scenes(self.scenes))
+        if self.editor:self.editor.check_duration(duration)
         if any(c.end>duration+.001 for c in self.manual_captions):
             raise ValueError('Manual caption cues use output seconds and must remain inside the rendered duration.')
         if any(c.end>duration+.001 for c in self.text_overlays):raise ValueError('Text overlays must remain inside the rendered timeline.')
