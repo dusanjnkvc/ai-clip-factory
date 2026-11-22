@@ -196,7 +196,7 @@ def process_job(job_id):
                 key = f'{job.user_id}/clips/{clip.id}/v{clip.current_version}.mp4'
                 put_file(output, key)
                 if render.get('remotion_base_path'):
-                    base_key=f'{job.user_id}/clips/{clip.id}/v{clip.current_version}-base.mp4';put_file(render['remotion_base_path'],base_key)
+                    base_key=f'{job.user_id}/clips/{clip.id}/v{clip.current_version}-base.mp4';put_file(Path(render['remotion_base_path']),base_key)
                     clip.media_info={**clip.media_info,'remotion_base_key':base_key}
                 clip.storage_key = key
                 if evaluation:

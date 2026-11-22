@@ -22,6 +22,11 @@ def test_project_defaults_three_drafts_persist_and_start_is_idempotent(environme
         def generate_metadata(self,*a,**kw):
             self.bundle={'research':{'status':'unavailable'},'recommended':sample_metadata()['youtube']['variants'][0]}
             return sample_metadata()
+        def render_clip(self,source,plan,transcript,output,**kwargs):
+            result=super().render_clip(source,plan,transcript,output,**kwargs)
+            # The renderer serializes its proxy path as JSON-compatible text.
+            # Persist that real decoded file through the worker contract.
+            return {**result,'remotion_base_path':str(output)}
         def evaluate_render(self,*a,**kw):
             return {'platforms':{},'controlled_test':True}
         def finalize_metadata(self,*a,**kw):return sample_metadata()
@@ -34,6 +39,8 @@ def test_project_defaults_three_drafts_persist_and_start_is_idempotent(environme
     assert worker.run_once()
     detail=client.get(f"/api/studio/projects/{project['id']}").json()
     assert len(detail['drafts'])==3 and all(d['media_info']['decode_verified'] for d in detail['drafts'])
+    assert all(d['media_info']['remotion_base_key'] for d in detail['drafts'])
+    assert client.get(f"/api/studio/drafts/{detail['drafts'][0]['id']}/remotion-base").status_code==200
     gallery=client.get('/api/studio/clips').json()
     assert len(gallery)==3 and gallery[0]['campaign_name']=='Authorized campaign'
     assert 'publishing_jobs' in gallery[0] and gallery[0]['decision']=='needs_review'
